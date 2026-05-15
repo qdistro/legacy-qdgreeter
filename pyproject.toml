@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qdgreeter"
+version = "0.1.0"
+description = "qdistro boot greeter — graphical replacement for tuigreet"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.6",
+]
+
+[project.scripts]
+qdgreeter = "qdgreeter.app:main"
+
+[tool.setuptools.packages.find]
+include = ["qdgreeter*"]

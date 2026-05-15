@@ -1,0 +1,20 @@
+[Unit]
+Description=qdistro boot greeter
+# greetd invokes qdgreeter directly via its 'greeter' config field;
+# this unit is here for diagnostic / debug runs (`systemd-run --user
+# qdgreeter` to test the QML outside the greetd handshake). For the
+# production path, see /etc/greetd/config.toml:
+#   [default_session]
+#   command = "qdgreeter"
+#   user = "_greeter"
+# (Per qdistro/doc/sessions.md: this is the tty3 entry, replacing
+# tuigreet's role on that TTY. tty2 remains tuigreet as the emergency
+# textual fallback.)
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/qdgreeter
+Environment=QT_QPA_PLATFORM=wayland
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
