@@ -183,3 +183,75 @@ def test_username_defaults_to_admin(qapp):
     assert ctl.username == "admin"
     _run(ctl, "")
     assert client.sent[0]["username"] == "admin"
+
+
+def test_visible_auth_message_never_receives_password(qapp):
+    """`visible` auth_message_type is non-secret per greetd-ipc(7);
+    many PAM modules log responses to it. The controller MUST NOT
+    replay the password — ack with null and let the secret prompt
+    (which PAM flags as secret) carry it."""
+    secret_password = "hunter2-do-not-leak"
+    client = _FakeClient(
+        [
+            {
+                "type": "auth_message",
+                "auth_message_type": "visible",
+                "auth_message": "Username:",
+            },
+            {
+                "type": "auth_message",
+                "auth_message_type": "secret",
+                "auth_message": "Password:",
+            },
+            {"type": "success"},
+            {"type": "success"},
+        ]
+    )
+    ctl = GreetController(client=client)
+    _run(ctl, secret_password)
+
+    # The visible prompt must have been acked with None, not the password.
+    visible_acks = [
+        m for m in client.sent
+        if m.get("type") == "post_auth_message_response"
+    ]
+    assert visible_acks, "no post_auth_message_response frames sent"
+    # First post_auth (in response to visible) must be null.
+    assert visible_acks[0]["response"] is None, (
+        f"visible prompt got non-null response: {visible_acks[0]!r}"
+    )
+    # Password must never have been sent as the visible response;
+    # it should only appear once, in response to the secret prompt.
+    pw_responses = [m for m in visible_acks if m.get("response") == secret_password]
+    assert len(pw_responses) == 1
+    # And that one occurrence is the second frame (after visible).
+    assert visible_acks[1]["response"] == secret_password
+
+
+def test_connection_loss_surfaces_distinct_message(qapp):
+    """`IncompleteReadError` / `ConnectionResetError` mid-flow must not
+    be relabeled as 'Authentication failed' — the password may have
+    been correct. Operator needs to know the channel died."""
+
+    class _BrokenClient(_FakeClient):
+        async def post_auth(self, response):  # noqa: ANN001
+            raise asyncio.IncompleteReadError(b"", 4)
+
+    client = _BrokenClient(
+        [
+            {"type": "auth_message", "auth_message_type": "secret", "auth_message": "Password:"},
+        ]
+    )
+    ctl = GreetController(client=client)
+    fired = {"fail": 0}
+    ctl.failed.connect(lambda: fired.__setitem__("fail", fired["fail"] + 1))
+
+    _run(ctl, "anything")
+
+    assert fired["fail"] == 1
+    assert "disconnect" in ctl.statusMessage.lower(), (
+        f"unexpected status for connection loss: {ctl.statusMessage!r}"
+    )
+    assert "auth" not in ctl.statusMessage.lower() or "retry" in ctl.statusMessage.lower(), (
+        "connection-loss UX must not be relabeled as auth failure"
+    )

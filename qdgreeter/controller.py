@@ -29,8 +29,14 @@ from .greetd import GreetdClient, GreetdError
 log = logging.getLogger("qdgreeter.controller")
 
 DEFAULT_USER = os.environ.get("QDGREETER_USER", "admin")
+# greetd execs this as the authenticated user; its lifetime IS the session
+# lifetime. A bare `systemctl --user start qdwin-session.target` returns 0
+# as soon as the job is enqueued — greetd would see a clean session end
+# milliseconds after auth and recycle back to the greeter. The launcher
+# (deploy/qdwin-session-launcher.sh) does the right `--wait` semantics and
+# surfaces non-zero exits.
 DEFAULT_SESSION_CMD = os.environ.get(
-    "QDGREETER_SESSION_CMD", "systemctl --user start qdwin-session.target"
+    "QDGREETER_SESSION_CMD", "/usr/local/bin/qdwin-session-launcher"
 ).split()
 
 
@@ -138,11 +144,26 @@ class GreetController(QObject):
             self._set_status(exc.description)
             await self._cancel_quiet()
             self.failed.emit()
-        except Exception as exc:  # noqa: BLE001
+        except (
+            asyncio.IncompleteReadError,
+            ConnectionResetError,
+            BrokenPipeError,
+        ):
+            # The socket died mid-flow (typical when greetd closes after
+            # an error reply, or restarts under load). The password may
+            # well have been correct — labeling this "Authentication
+            # failed" misleads the operator. Don't chase the closed
+            # socket with cancel_session; just surface the disconnect.
+            log.exception("greetd disconnected mid-flow")
+            self._set_status("greetd disconnected; retry login")
+            self.failed.emit()
+        except Exception:  # noqa: BLE001
             # Don't include the password or any payload in the log;
             # `exc` is from socket / json layer, password isn't in it.
+            # Don't echo `str(exc)` into the UI — it can carry socket
+            # paths or reply bytes; keep details in the journal.
             log.exception("greetd flow raised")
-            self._set_status(str(exc) or "Authentication failed")
+            self._set_status("Authentication failed — see journalctl")
             await self._cancel_quiet()
             self.failed.emit()
         finally:
@@ -165,12 +186,13 @@ class GreetController(QObject):
             message = reply.get("auth_message", "")
             if kind == "secret":
                 reply = await self._client.post_auth(password)
-            elif kind == "visible":
-                # MVP: visible challenges (non-secret prompt) reuse the
-                # password field's contents — admins should not encounter
-                # them on a single-user system, but we keep it advancing.
-                reply = await self._client.post_auth(password)
-            else:  # info, error
+            else:
+                # visible / info / error: per greetd-ipc(7), `visible`
+                # is a non-secret prompt whose response many PAM modules
+                # log in plaintext. NEVER replay the password into one.
+                # MVP-safe: display the message and ack with null so the
+                # stack advances; the user can retry if they need a real
+                # response collected.
                 if message:
                     self._set_status(message)
                 reply = await self._client.post_auth(None)
