@@ -1,22 +1,36 @@
-"""GreetController — boot greeter state. Smaller surface than the
-locker's controller because greetd handles PAM and session creation;
-we only drive the round-trip and surface auth_messages."""
+"""GreetController — boot greeter state.
+
+Smaller surface than the locker's controller because greetd handles PAM
+and session creation; we only drive the round-trip, surface auth_messages,
+and forward errors to the UI.
+
+Auth flow per `greetd-ipc(7)`:
+
+  create_session(admin)
+  loop:
+    reply is success            → start_session(cmd) → success → succeeded
+    reply is auth_message+secret → post_auth(password)
+    reply is auth_message+info  → post_auth(None)              (display, continue)
+    reply is error+auth_error   → cancel_session → failed (retryable)
+    reply is error+error        → cancel_session → failed (fatal)
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import threading
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 
-from .greetd import GreetdClient
+from .greetd import GreetdClient, GreetdError
 
 log = logging.getLogger("qdgreeter.controller")
 
 DEFAULT_USER = os.environ.get("QDGREETER_USER", "admin")
 DEFAULT_SESSION_CMD = os.environ.get(
-    "QDGREETER_SESSION_CMD", "qdistro-admin-compositor"
+    "QDGREETER_SESSION_CMD", "systemctl --user start qdwin-session.target"
 ).split()
 
 
@@ -26,14 +40,26 @@ class GreetController(QObject):
     _currentTextChanged = Signal()
     _statusMessageChanged = Signal()
     _busyChanged = Signal()
+    _usernameChanged = Signal()
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        client: GreetdClient | None = None,
+        session_cmd: list[str] | None = None,
+        username: str | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._username = username or DEFAULT_USER
+        self._session_cmd = list(session_cmd) if session_cmd else list(DEFAULT_SESSION_CMD)
         self._current_text = ""
         self._status_message = ""
         self._busy = False
-        self._client = GreetdClient()
-        self._loop = asyncio.new_event_loop()
+        self._client = client or GreetdClient()
+
+    @Property(str, notify=_usernameChanged)
+    def username(self) -> str:
+        return self._username
 
     @Property(str, notify=_currentTextChanged)
     def currentText(self) -> str:
@@ -55,6 +81,8 @@ class GreetController(QObject):
         return self._busy
 
     def _set_status(self, msg: str) -> None:
+        if msg == self._status_message:
+            return
         self._status_message = msg
         self._statusMessageChanged.emit()
 
@@ -66,32 +94,99 @@ class GreetController(QObject):
 
     @Slot()
     def submit(self) -> None:
-        """Drive a full greetd round-trip on the current password."""
+        """Drive a full greetd round-trip on the current password.
+
+        Runs the asyncio flow in a dedicated worker thread so the Qt
+        event loop keeps spinning — otherwise `run_until_complete`
+        would block QML signal delivery and any auth_message status
+        updates would never paint.
+        """
         if self._busy:
             return
         password = self._current_text
         self._set_busy(True)
-        self._loop.run_until_complete(self._auth_flow(password))
-        self._set_busy(False)
+        self._set_status("")
+
+        def _run() -> None:
+            try:
+                asyncio.run(self._auth_flow(password))
+            finally:
+                # Mutating bound Qt properties from a foreign thread is
+                # only safe for the small set of writes we do here
+                # (no QML connections issue cross-thread signals
+                # under PySide6's auto-connection rules) — but the
+                # bool/string property writes will queue a notify
+                # back onto the GUI thread, which is what we want.
+                self._set_busy(False)
+
+        threading.Thread(target=_run, name="qdgreeter-auth", daemon=True).start()
 
     async def _auth_flow(self, password: str) -> None:
         try:
             await self._client.connect()
-            reply = await self._client.create_session(DEFAULT_USER)
-            while reply.get("type") == "auth_message":
-                self._set_status(reply.get("auth_message", ""))
-                reply = await self._client.post_auth(password)
-                # greetd may issue further challenges (PIN, OTP); a
-                # full UI would loop here. The MVP submits the same
-                # password once.
+            reply = await self._client.create_session(self._username)
+            reply = await self._consume_auth_messages(reply, password)
             if reply.get("type") == "success":
-                reply = await self._client.start_session(DEFAULT_SESSION_CMD)
-                if reply.get("type") == "success":
+                start = await self._client.start_session(self._session_cmd)
+                if start.get("type") == "success":
                     self.succeeded.emit()
                     return
-            self._set_status(reply.get("description", "Authentication failed"))
+                self._handle_error_reply(start)
+            else:
+                self._handle_error_reply(reply)
+        except GreetdError as exc:
+            self._set_status(exc.description)
+            await self._cancel_quiet()
             self.failed.emit()
         except Exception as exc:  # noqa: BLE001
+            # Don't include the password or any payload in the log;
+            # `exc` is from socket / json layer, password isn't in it.
             log.exception("greetd flow raised")
-            self._set_status(str(exc))
+            self._set_status(str(exc) or "Authentication failed")
+            await self._cancel_quiet()
             self.failed.emit()
+        finally:
+            await self._client.close()
+
+    async def _consume_auth_messages(
+        self, reply: dict, password: str
+    ) -> dict:
+        """Walk the auth_message ↔ post_auth_message_response loop.
+
+        For `secret` we send the user-entered password (single attempt
+        per submit() — repeated greetd prompts within the same auth_flow
+        re-use the same string; if greetd needs a different challenge
+        the MVP fails and the user retries).
+        For `info` / `error` types we acknowledge with a null response
+        so greetd can advance to the next stage.
+        """
+        while reply.get("type") == "auth_message":
+            kind = reply.get("auth_message_type", "secret")
+            message = reply.get("auth_message", "")
+            if kind == "secret":
+                reply = await self._client.post_auth(password)
+            elif kind == "visible":
+                # MVP: visible challenges (non-secret prompt) reuse the
+                # password field's contents — admins should not encounter
+                # them on a single-user system, but we keep it advancing.
+                reply = await self._client.post_auth(password)
+            else:  # info, error
+                if message:
+                    self._set_status(message)
+                reply = await self._client.post_auth(None)
+        return reply
+
+    def _handle_error_reply(self, reply: dict) -> None:
+        if reply.get("type") == "error":
+            description = reply.get("description", "Authentication failed")
+            self._set_status(description)
+        else:
+            self._set_status(reply.get("description", "Authentication failed"))
+        self.failed.emit()
+
+    async def _cancel_quiet(self) -> None:
+        try:
+            if self._client.connected:
+                await self._client.cancel_session()
+        except Exception:  # noqa: BLE001
+            pass
