@@ -137,9 +137,9 @@ class GreetController(QObject):
                 if start.get("type") == "success":
                     self.succeeded.emit()
                     return
-                self._handle_error_reply(start)
+                await self._handle_error_reply(start)
             else:
-                self._handle_error_reply(reply)
+                await self._handle_error_reply(reply)
         except GreetdError as exc:
             self._set_status(exc.description)
             await self._cancel_quiet()
@@ -198,12 +198,21 @@ class GreetController(QObject):
                 reply = await self._client.post_auth(None)
         return reply
 
-    def _handle_error_reply(self, reply: dict) -> None:
+    async def _handle_error_reply(self, reply: dict) -> None:
         if reply.get("type") == "error":
             description = reply.get("description", "Authentication failed")
             self._set_status(description)
         else:
             self._set_status(reply.get("description", "Authentication failed"))
+        # Cancel the session so greetd returns to a clean state and the
+        # next submit() can retry from create_session. Per greetd-ipc(7),
+        # an `error` reply (auth_error or error) leaves the session in
+        # an aborted state on greetd's side, but the client must still
+        # send cancel_session for the slot to be reclaimable before the
+        # next create_session. This matches the docstring contract at
+        # the top of this module ("error+auth_error → cancel_session").
+        # _cancel_quiet swallows any post-error socket errors.
+        await self._cancel_quiet()
         self.failed.emit()
 
     async def _cancel_quiet(self) -> None:

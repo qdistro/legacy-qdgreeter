@@ -170,9 +170,16 @@ def test_info_auth_message_displays_then_continues(qapp):
     _run(ctl, "hunter2")
 
     # info acknowledges with null response, then the secret prompt
-    # gets the real password.
-    null_acks = [m for m in client.sent if m.get("response") is None]
-    pw_acks = [m for m in client.sent if m.get("response") == "hunter2"]
+    # gets the real password. Filter to post_auth_message_response
+    # frames only — create_session / start_session also lack a
+    # `response` key, so a bare `.get("response") is None` filter
+    # would over-count by including them.
+    post_auths = [
+        m for m in client.sent
+        if m.get("type") == "post_auth_message_response"
+    ]
+    null_acks = [m for m in post_auths if m.get("response") is None]
+    pw_acks = [m for m in post_auths if m.get("response") == "hunter2"]
     assert len(null_acks) == 1
     assert len(pw_acks) == 1
 
