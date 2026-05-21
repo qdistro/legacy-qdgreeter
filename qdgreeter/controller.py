@@ -22,7 +22,7 @@ import logging
 import os
 import threading
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal, pyqtSlot
 
 from .greetd import GreetdClient, GreetdError
 
@@ -41,12 +41,12 @@ DEFAULT_SESSION_CMD = os.environ.get(
 
 
 class GreetController(QObject):
-    succeeded = Signal()
-    failed = Signal()
-    _currentTextChanged = Signal()
-    _statusMessageChanged = Signal()
-    _busyChanged = Signal()
-    _usernameChanged = Signal()
+    succeeded = pyqtSignal()
+    failed = pyqtSignal()
+    _currentTextChanged = pyqtSignal()
+    _statusMessageChanged = pyqtSignal()
+    _busyChanged = pyqtSignal()
+    _usernameChanged = pyqtSignal()
 
     def __init__(
         self,
@@ -63,11 +63,11 @@ class GreetController(QObject):
         self._busy = False
         self._client = client or GreetdClient()
 
-    @Property(str, notify=_usernameChanged)
+    @pyqtProperty(str, notify=_usernameChanged)
     def username(self) -> str:
         return self._username
 
-    @Property(str, notify=_currentTextChanged)
+    @pyqtProperty(str, notify=_currentTextChanged)
     def currentText(self) -> str:
         return self._current_text
 
@@ -78,11 +78,11 @@ class GreetController(QObject):
         self._current_text = value
         self._currentTextChanged.emit()
 
-    @Property(str, notify=_statusMessageChanged)
+    @pyqtProperty(str, notify=_statusMessageChanged)
     def statusMessage(self) -> str:
         return self._status_message
 
-    @Property(bool, notify=_busyChanged)
+    @pyqtProperty(bool, notify=_busyChanged)
     def busy(self) -> bool:
         return self._busy
 
@@ -98,7 +98,7 @@ class GreetController(QObject):
         self._busy = value
         self._busyChanged.emit()
 
-    @Slot()
+    @pyqtSlot()
     def submit(self) -> None:
         """Drive a full greetd round-trip on the current password.
 
@@ -120,7 +120,7 @@ class GreetController(QObject):
                 # Mutating bound Qt properties from a foreign thread is
                 # only safe for the small set of writes we do here
                 # (no QML connections issue cross-thread signals
-                # under PySide6's auto-connection rules) — but the
+                # under PyQt6's auto-connection rules) — but the
                 # bool/string property writes will queue a notify
                 # back onto the GUI thread, which is what we want.
                 self._set_busy(False)

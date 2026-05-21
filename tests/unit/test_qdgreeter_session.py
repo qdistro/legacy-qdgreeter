@@ -19,8 +19,8 @@ if _HEADLESS:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
-PySide6 = pytest.importorskip("PySide6", reason="PySide6 not installed")
-from PySide6.QtCore import QCoreApplication  # noqa: E402
+PyQt6 = pytest.importorskip("PyQt6", reason="PyQt6 not installed")
+from PyQt6.QtCore import QCoreApplication  # noqa: E402
 
 from qdgreeter.controller import GreetController  # noqa: E402
 

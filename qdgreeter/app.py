@@ -12,9 +12,9 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, QUrl
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtQml import QQmlApplicationEngine
+from PyQt6.QtCore import QCoreApplication, QUrl
+from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtQml import QQmlApplicationEngine
 
 from .controller import GreetController
 
