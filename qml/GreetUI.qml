@@ -89,7 +89,7 @@ Item {
         color: "white"
         echoMode: TextInput.Password
         passwordCharacter: "•"
-        enabled: controller ? !controller.busy : true
+        enabled: controller ? !controller.busy : false
         text: controller ? controller.currentText : ""
         onTextChanged: if (controller) controller.currentText = text
         Keys.onPressed: function (event) {
@@ -124,7 +124,7 @@ Item {
       MouseArea {
         id: submitMouse
         anchors.fill: parent
-        enabled: controller ? !controller.busy : true
+        enabled: controller ? !controller.busy : false
         cursorShape: Qt.PointingHandCursor
         onClicked: if (controller) controller.submit()
       }
