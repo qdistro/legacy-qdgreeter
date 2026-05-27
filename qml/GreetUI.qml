@@ -1,15 +1,19 @@
-// GreetUI — boot greeter. Minimal sign-in chrome:
-// username field (auto-filled, read-only — single-user qdistro),
-// password field, submit button, error label.
+// GreetUI — pure-QtQuick boot greeter, no Quickshell dependency.
+//
+// Minimal sign-in chrome: username field (auto-filled, read-only —
+// single-user qdistro), password field, submit button, error label.
 //
 // Per plan2/tasks/P01: deliberately minimal — branding polish is
-// reserved for a follow-up task. Visuals reuse qdshell's qs.Commons
-// (Color, Style) and qs.Widgets (NText, NIcon, NBusyIndicator).
+// reserved for a follow-up task. Hardcoded dark-theme palette mirrors
+// the colour intent of qdshell without importing qs.Commons/qs.Widgets.
+//
+// Controller interface (from qdgreeter/controller.py):
+//   username, currentText, statusMessage, busy
+// with NOTIFY signals; submit() slot.
 
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
-import qs.Commons
-import qs.Widgets
 
 Item {
   id: root
@@ -17,25 +21,25 @@ Item {
 
   Rectangle {
     anchors.fill: parent
-    color: Color.mSurface
+    color: "#101015"
   }
 
   ColumnLayout {
     anchors.centerIn: parent
-    spacing: Style.marginXL
+    spacing: 24
     width: Math.min(parent.width * 0.5, 520)
 
-    NIcon {
-      icon: "user-circle"
-      pointSize: Style.fontSizeXXL * 2
-      color: Color.mPrimary
+    Text {
+      text: "👤"
+      font.pointSize: 56
+      color: "#80c0ff"
       Layout.alignment: Qt.AlignHCenter
     }
 
-    NText {
+    Text {
       text: "Welcome to qdistro"
-      pointSize: Style.fontSizeXXL
-      color: Color.mOnSurface
+      font.pointSize: 28
+      color: "white"
       Layout.alignment: Qt.AlignHCenter
     }
 
@@ -47,20 +51,20 @@ Item {
     Rectangle {
       Layout.fillWidth: true
       height: 48
-      radius: Style.radiusM
-      color: Color.mSurfaceVariant
+      radius: 6
+      color: "#202028"
       border.width: 1
-      border.color: Color.mOutline
+      border.color: "#555560"
 
       TextInput {
         id: usernameInput
         objectName: "qdgreeter.username"
         anchors.fill: parent
-        anchors.leftMargin: Style.marginM
-        anchors.rightMargin: Style.marginM
+        anchors.leftMargin: 12
+        anchors.rightMargin: 12
         verticalAlignment: TextInput.AlignVCenter
-        font.pointSize: Style.fontSizeL
-        color: Color.mOnSurface
+        font.pointSize: 16
+        color: "white"
         readOnly: true
         text: controller ? controller.username : "admin"
       }
@@ -69,20 +73,20 @@ Item {
     Rectangle {
       Layout.fillWidth: true
       height: 48
-      radius: Style.radiusM
-      color: Color.mSurfaceVariant
+      radius: 6
+      color: "#202028"
       border.width: passwordInput.activeFocus ? 2 : 1
-      border.color: passwordInput.activeFocus ? Color.mPrimary : Color.mOutline
+      border.color: passwordInput.activeFocus ? "#80c0ff" : "#555560"
 
       TextInput {
         id: passwordInput
         objectName: "qdgreeter.password"
         anchors.fill: parent
-        anchors.leftMargin: Style.marginM
-        anchors.rightMargin: Style.marginM
+        anchors.leftMargin: 12
+        anchors.rightMargin: 12
         verticalAlignment: TextInput.AlignVCenter
-        font.pointSize: Style.fontSizeL
-        color: Color.mOnSurface
+        font.pointSize: 16
+        color: "white"
         echoMode: TextInput.Password
         passwordCharacter: "•"
         enabled: controller && !controller.busy
@@ -106,15 +110,15 @@ Item {
       objectName: "qdgreeter.submit"
       Layout.fillWidth: true
       height: 44
-      radius: Style.radiusM
-      color: submitMouse.pressed ? Color.mPrimaryDim : Color.mPrimary
+      radius: 6
+      color: submitMouse.pressed ? "#5090cc" : "#80c0ff"
       opacity: (controller && controller.busy) ? 0.5 : 1.0
 
-      NText {
+      Text {
         anchors.centerIn: parent
         text: "Sign in"
-        pointSize: Style.fontSizeL
-        color: Color.mOnPrimary
+        font.pointSize: 16
+        color: "#101015"
       }
 
       MouseArea {
@@ -130,19 +134,19 @@ Item {
     // something to say. Status comes from controller.statusMessage
     // (auth_error description, info auth_message text, or local
     // exception string).
-    NText {
+    Text {
       objectName: "qdgreeter.status"
       visible: controller && controller.statusMessage.length > 0
       text: controller ? controller.statusMessage : ""
-      color: Color.mError
-      pointSize: Style.fontSizeM
+      color: "#ff8080"
+      font.pointSize: 14
       Layout.alignment: Qt.AlignHCenter
     }
 
-    Loader {
-      active: controller && controller.busy
-      sourceComponent: NBusyIndicator { }
+    BusyIndicator {
       Layout.alignment: Qt.AlignHCenter
+      visible: controller && controller.busy
+      running: visible
     }
   }
 }
