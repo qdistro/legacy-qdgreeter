@@ -89,7 +89,7 @@ Item {
         color: "white"
         echoMode: TextInput.Password
         passwordCharacter: "•"
-        enabled: controller && !controller.busy
+        enabled: controller ? !controller.busy : true
         text: controller ? controller.currentText : ""
         onTextChanged: if (controller) controller.currentText = text
         Keys.onPressed: function (event) {
@@ -124,7 +124,7 @@ Item {
       MouseArea {
         id: submitMouse
         anchors.fill: parent
-        enabled: controller && !controller.busy
+        enabled: controller ? !controller.busy : true
         cursorShape: Qt.PointingHandCursor
         onClicked: if (controller) controller.submit()
       }
@@ -136,7 +136,7 @@ Item {
     // exception string).
     Text {
       objectName: "qdgreeter.status"
-      visible: controller && controller.statusMessage.length > 0
+      visible: controller ? controller.statusMessage.length > 0 : false
       text: controller ? controller.statusMessage : ""
       color: "#ff8080"
       font.pointSize: 14
@@ -145,7 +145,7 @@ Item {
 
     BusyIndicator {
       Layout.alignment: Qt.AlignHCenter
-      visible: controller && controller.busy
+      visible: controller ? controller.busy : false
       running: visible
     }
   }
