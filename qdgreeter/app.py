@@ -24,20 +24,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 QML_ROOT = REPO_ROOT / "qml"
 
 
-def _qdshell_import_path() -> Path | None:
-    """qdgreeter is a sibling repo to qdshell under qdistro-org/.
-    REPO_ROOT is the qdgreeter repo root, so qdshell lives at
-    `../qdshell`. Override with QDGREETER_QDSHELL_PATH for non-
-    standard layouts."""
-    explicit = os.environ.get("QDGREETER_QDSHELL_PATH")
-    if explicit:
-        return Path(explicit)
-    for candidate in (REPO_ROOT.parent / "qdshell", REPO_ROOT.parent.parent / "qdshell"):
-        if (candidate / "Commons" / "Style.qml").exists():
-            return candidate
-    return None
-
-
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=os.environ.get("QDGREETER_LOG", "INFO"),
@@ -52,10 +38,6 @@ def main(argv: list[str] | None = None) -> int:
     controller.succeeded.connect(app.quit)
 
     engine = QQmlApplicationEngine()
-    qdshell = _qdshell_import_path()
-    if qdshell:
-        engine.addImportPath(str(qdshell))
-        log.info("qdshell QML import path: %s", qdshell)
     engine.rootContext().setContextProperty("controller", controller)
     engine.load(QUrl.fromLocalFile(str(QML_ROOT / "Main.qml")))
 
