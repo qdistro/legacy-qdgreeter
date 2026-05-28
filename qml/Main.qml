@@ -1,11 +1,12 @@
 import QtQuick
 import QtQuick.Window
+import shim
 
 Window {
   id: root
   visible: true
   visibility: Window.FullScreen
-  color: "#101015"
+  color: Color.mSurface
 
   GreetUI {
     id: greetUI

@@ -4,8 +4,9 @@
 // single-user qdistro), password field, submit button, error label.
 //
 // Per plan2/tasks/P01: deliberately minimal — branding polish is
-// reserved for a follow-up task. Hardcoded dark-theme palette mirrors
-// the colour intent of qdshell without importing qs.Commons/qs.Widgets.
+// reserved for a follow-up task.  Palette and metrics come from the
+// shim module (qdshell default dark theme) rather than inline hex
+// literals, so the greeter tracks qdshell's styling in one place.
 //
 // Controller interface (from qdgreeter/controller.py):
 //   username, currentText, statusMessage, busy
@@ -14,6 +15,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import shim
 
 Item {
   id: root
@@ -21,25 +23,25 @@ Item {
 
   Rectangle {
     anchors.fill: parent
-    color: "#101015"
+    color: Color.mSurface
   }
 
   ColumnLayout {
     anchors.centerIn: parent
-    spacing: 24
+    spacing: Style.marginXL
     width: Math.min(parent.width * 0.5, 520)
 
     Text {
       text: "👤"
-      font.pointSize: 56
-      color: "#80c0ff"
+      font.pointSize: Style.fontSizeXXXL * 2
+      color: Color.mPrimary
       Layout.alignment: Qt.AlignHCenter
     }
 
     Text {
       text: "Welcome to qdistro"
-      font.pointSize: 28
-      color: "white"
+      font.pointSize: Style.fontSizeXXXL
+      color: Color.mOnSurface
       Layout.alignment: Qt.AlignHCenter
     }
 
@@ -51,20 +53,20 @@ Item {
     Rectangle {
       Layout.fillWidth: true
       height: 48
-      radius: 6
-      color: "#202028"
-      border.width: 1
-      border.color: "#555560"
+      radius: Style.radiusXS
+      color: Color.mSurfaceVariant
+      border.width: Style.borderS
+      border.color: Color.mOutline
 
       TextInput {
         id: usernameInput
         objectName: "qdgreeter.username"
         anchors.fill: parent
-        anchors.leftMargin: 12
-        anchors.rightMargin: 12
+        anchors.leftMargin: Style.marginL
+        anchors.rightMargin: Style.marginL
         verticalAlignment: TextInput.AlignVCenter
-        font.pointSize: 16
-        color: "white"
+        font.pointSize: Style.fontSizeXL
+        color: Color.mOnSurface
         readOnly: true
         text: controller ? controller.username : "admin"
       }
@@ -73,20 +75,20 @@ Item {
     Rectangle {
       Layout.fillWidth: true
       height: 48
-      radius: 6
-      color: "#202028"
-      border.width: passwordInput.activeFocus ? 2 : 1
-      border.color: passwordInput.activeFocus ? "#80c0ff" : "#555560"
+      radius: Style.radiusXS
+      color: Color.mSurfaceVariant
+      border.width: passwordInput.activeFocus ? Style.borderM : Style.borderS
+      border.color: passwordInput.activeFocus ? Color.mPrimary : Color.mOutline
 
       TextInput {
         id: passwordInput
         objectName: "qdgreeter.password"
         anchors.fill: parent
-        anchors.leftMargin: 12
-        anchors.rightMargin: 12
+        anchors.leftMargin: Style.marginL
+        anchors.rightMargin: Style.marginL
         verticalAlignment: TextInput.AlignVCenter
-        font.pointSize: 16
-        color: "white"
+        font.pointSize: Style.fontSizeXL
+        color: Color.mOnSurface
         echoMode: TextInput.Password
         passwordCharacter: "•"
         enabled: controller ? !controller.busy : false
@@ -110,15 +112,15 @@ Item {
       objectName: "qdgreeter.submit"
       Layout.fillWidth: true
       height: 44
-      radius: 6
-      color: submitMouse.pressed ? "#5090cc" : "#80c0ff"
-      opacity: (controller && controller.busy) ? 0.5 : 1.0
+      radius: Style.radiusXS
+      color: submitMouse.pressed ? Qt.darker(Color.mPrimary, 1.3) : Color.mPrimary
+      opacity: (controller && controller.busy) ? Style.opacityMedium : Style.opacityFull
 
       Text {
         anchors.centerIn: parent
         text: "Sign in"
-        font.pointSize: 16
-        color: "#101015"
+        font.pointSize: Style.fontSizeXL
+        color: Color.mOnPrimary
       }
 
       MouseArea {
@@ -138,8 +140,8 @@ Item {
       objectName: "qdgreeter.status"
       visible: controller ? controller.statusMessage.length > 0 : false
       text: controller ? controller.statusMessage : ""
-      color: "#ff8080"
-      font.pointSize: 14
+      color: Color.mError
+      font.pointSize: Style.fontSizeL
       Layout.alignment: Qt.AlignHCenter
     }
 

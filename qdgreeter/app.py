@@ -38,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     controller.succeeded.connect(app.quit)
 
     engine = QQmlApplicationEngine()
+    engine.addImportPath(str(QML_ROOT))
     engine.rootContext().setContextProperty("controller", controller)
     engine.load(QUrl.fromLocalFile(str(QML_ROOT / "Main.qml")))
 
