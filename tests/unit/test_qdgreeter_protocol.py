@@ -196,6 +196,18 @@ def test_round_trip_create_session_success():
     _run(go())
 
 
+@pytest.mark.cheat_aware(
+    protects="start_session is only reached AFTER create_session + a "
+    "successful post_auth exchange — auth gates session start",
+    severity="critical",
+    cheats=[
+        "reorder/relax the received-frame sequence assertion",
+        "stop asserting the password actually traveled in post_auth",
+        "let start_session fire before the success reply",
+    ],
+    consequence="a session could be launched without the password ever being "
+    "verified by greetd/PAM",
+)
 def test_round_trip_full_auth_flow_to_start_session():
     """create_session → auth_message(secret) → post_auth → success → start_session → success."""
 
@@ -282,6 +294,18 @@ def test_round_trip_cancel_session_after_auth_error():
     _run(go())
 
 
+@pytest.mark.cheat_aware(
+    protects="the password is never written to the greetd debug log — only "
+    "the frame `type` may be logged",
+    severity="critical",
+    cheats=[
+        "lower the caplog level so DEBUG records are not captured",
+        "narrow the substring search away from the real secret",
+        "skip the assertion when caplog is empty",
+    ],
+    consequence="passwords land in journald/log files in cleartext, readable "
+    "by anyone with log access",
+)
 def test_password_is_not_serialized_into_log(monkeypatch, caplog):
     """Regression guard for §security review: greetd debug logs must
     never carry the payload — only its `type`. If a future contributor

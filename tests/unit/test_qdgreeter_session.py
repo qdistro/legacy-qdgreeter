@@ -102,6 +102,18 @@ def test_success_path_emits_succeeded(qapp):
     assert client.closed
 
 
+@pytest.mark.cheat_aware(
+    protects="a wrong password does NOT start a session — auth_error emits "
+    "failed and never reaches start_session",
+    severity="critical",
+    cheats=[
+        "assert fired['fail'] >= 0 (always true)",
+        "drop the cancel_session assertion so a stuck session looks fine",
+        "treat auth_error as a non-fatal info message",
+    ],
+    consequence="an incorrect password could fall through to start_session, "
+    "logging a user in without valid authentication",
+)
 def test_auth_error_emits_failed_and_status(qapp):
     client = _FakeClient(
         [
@@ -192,6 +204,18 @@ def test_username_defaults_to_admin(qapp):
     assert client.sent[0]["username"] == "admin"
 
 
+@pytest.mark.cheat_aware(
+    protects="the password is only ever sent in response to a `secret` "
+    "prompt; `visible`/non-secret prompts get a null ack",
+    severity="critical",
+    cheats=[
+        "reply with the password to every auth_message regardless of type",
+        "weaken the null-ack assertion to allow the password through",
+        "stop filtering to post_auth_message_response frames",
+    ],
+    consequence="the password leaks to a non-secret PAM prompt that many "
+    "modules echo or log in cleartext",
+)
 def test_visible_auth_message_never_receives_password(qapp):
     """`visible` auth_message_type is non-secret per greetd-ipc(7);
     many PAM modules log responses to it. The controller MUST NOT
