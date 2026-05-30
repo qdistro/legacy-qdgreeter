@@ -30,6 +30,22 @@ log = logging.getLogger("qdgreeter.greetd")
 _HEADER_FMT = "=I"
 _HEADER_SIZE = struct.calcsize(_HEADER_FMT)
 
+# Upper bound on a single greetd frame body, in bytes.
+#
+# Real greetd replies are tiny JSON objects: the largest is an
+# auth_message carrying a prompt string, or a start_session frame whose
+# `cmd`/`env` lists we ourselves control — all well under a kilobyte. A
+# 1 MiB cap is therefore enormously generous for any legitimate frame
+# while still bounding the worst case.
+#
+# The length prefix is an attacker- (or bug-) controlled uint32, so it
+# can advertise up to 4 GiB. Without a cap, `readexactly(length)` would
+# buffer that much before we ever see a byte of the (never-arriving)
+# body: an unbounded allocation / memory-exhaustion DoS, or an
+# indefinite hang. We fail closed — reject the advertised length BEFORE
+# allocating or awaiting the body — rather than trust the peer.
+MAX_FRAME_SIZE = 1 << 20  # 1 MiB
+
 
 def encode_frame(payload: dict[str, Any]) -> bytes:
     """Serialize a greetd JSON payload as a length-prefixed frame."""
@@ -37,11 +53,31 @@ def encode_frame(payload: dict[str, Any]) -> bytes:
     return struct.pack(_HEADER_FMT, len(body)) + body
 
 
+def _check_frame_length(length: int) -> None:
+    """Validate an advertised frame-body length, fail-closed.
+
+    Rejects a length that is negative (defensive — the wire format is
+    unsigned, but never trust the caller), zero (greetd always sends a
+    non-empty JSON object), or larger than ``MAX_FRAME_SIZE``. Raising
+    here — before any slice or ``readexactly`` — is what stops a hostile
+    or buggy peer from driving an oversized allocation.
+    """
+    if length <= 0:
+        raise ValueError(f"frame body length non-positive: {length}")
+    if length > MAX_FRAME_SIZE:
+        raise ValueError(
+            f"frame body length {length} exceeds maximum {MAX_FRAME_SIZE}"
+        )
+
+
 def decode_frame(data: bytes) -> dict[str, Any]:
     """Inverse of encode_frame. Raises ValueError if the prefix lies."""
     if len(data) < _HEADER_SIZE:
         raise ValueError("frame shorter than header")
     (length,) = struct.unpack(_HEADER_FMT, data[:_HEADER_SIZE])
+    # Bound-check the advertised length BEFORE slicing the body, so an
+    # oversized prefix is rejected without materializing a giant slice.
+    _check_frame_length(length)
     body = data[_HEADER_SIZE : _HEADER_SIZE + length]
     if len(body) != length:
         raise ValueError(f"frame body length mismatch: header={length} actual={len(body)}")
@@ -96,6 +132,12 @@ class GreetdClient:
         await self._writer.drain()
         header = await self._reader.readexactly(_HEADER_SIZE)
         (length,) = struct.unpack(_HEADER_FMT, header)
+        # Reject an oversized / nonsense advertised length BEFORE awaiting
+        # the body. A hostile or buggy greetd advertising a huge length
+        # would otherwise make readexactly() buffer up to 4 GiB while
+        # waiting on a body that never arrives — a memory-exhaustion DoS
+        # or indefinite hang. Fail closed.
+        _check_frame_length(length)
         body = await self._reader.readexactly(length)
         reply = json.loads(body)
         # Never log the payload itself — `post_auth_message_response`

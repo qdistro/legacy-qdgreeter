@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from qdgreeter.greetd import (
+    MAX_FRAME_SIZE,
     GreetdClient,
     decode_frame,
     encode_frame,
@@ -108,6 +109,114 @@ def test_decode_frame_rejects_truncated_body():
     truncated = good[: -2]
     with pytest.raises(ValueError):
         decode_frame(truncated)
+
+
+# ---------------------------------------------------------------------------
+# Frame-length upper bound (memory-exhaustion / malformed-frame hardening).
+#
+# The length prefix is an attacker-/bug-controlled uint32. Without a cap a
+# hostile or buggy greetd advertising a huge length drives an unbounded
+# allocation (decode_frame slice) or an unbounded readexactly() await (the
+# async read loop). These tests pin the fail-closed behavior: the length is
+# rejected BEFORE any body is materialized or awaited.
+# ---------------------------------------------------------------------------
+
+
+def test_max_frame_size_is_generous_but_bounded():
+    """Sanity-pin the cap: big enough for any real greetd reply, small
+    enough to bound the worst case. If someone bumps it to absurdity the
+    DoS protection is gone."""
+    assert MAX_FRAME_SIZE == 1 << 20  # 1 MiB
+
+
+def test_decode_frame_at_max_length_is_accepted():
+    """Boundary: a body of exactly MAX_FRAME_SIZE bytes must decode.
+
+    We don't build a 1 MiB JSON document; instead we craft a header that
+    advertises exactly MAX_FRAME_SIZE and supply a real, parseable JSON
+    body padded to that length. This proves the cap is inclusive (rejecting
+    at == MAX would be an off-by-one that breaks legitimate large frames).
+    """
+    payload = {"type": "auth_message", "auth_message": ""}
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    # Pad the prompt string with spaces until the body is exactly MAX bytes.
+    pad = MAX_FRAME_SIZE - len(body)
+    assert pad >= 0
+    payload["auth_message"] = " " * pad
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    assert len(body) == MAX_FRAME_SIZE
+    frame = struct.pack("=I", MAX_FRAME_SIZE) + body
+    decoded = decode_frame(frame)
+    assert decoded["type"] == "auth_message"
+    assert len(decoded["auth_message"]) == pad
+
+
+def test_decode_frame_rejects_length_over_max_without_reading_body():
+    """MAX+1 must be rejected, and rejected from the HEADER alone — we
+    pass a 4-byte header with NO body, so a decoder that bound-checks only
+    after slicing would instead raise the 'mismatch' error (or, worse,
+    attempt the slice). Assert the rejection cites the maximum."""
+    header_only = struct.pack("=I", MAX_FRAME_SIZE + 1)
+    with pytest.raises(ValueError, match="maximum"):
+        decode_frame(header_only)
+
+
+def test_decode_frame_rejects_huge_uint32_length_without_allocating():
+    """A near-uint32-max length (≈4 GiB) must be rejected outright. If the
+    bound check were missing, the body slice would be attempted; here we
+    feed only the header, so any pre-check failure proves we never tried to
+    materialize ~4 GiB."""
+    header_only = struct.pack("=I", 0xFFFFFFFF)
+    with pytest.raises(ValueError, match="maximum"):
+        decode_frame(header_only)
+
+
+def test_decode_frame_rejects_zero_length():
+    """greetd always sends a non-empty JSON object; a zero-length frame is
+    nonsense and must be rejected rather than fed to json.loads("")."""
+    with pytest.raises(ValueError):
+        decode_frame(struct.pack("=I", 0))
+
+
+def test_read_loop_rejects_oversized_header_before_reading_body():
+    """The async read loop must reject an oversized advertised length BEFORE
+    awaiting readexactly(length).
+
+    We drive _send with a StreamReader fed ONLY a crafted header (no body
+    bytes). If the loop bound-checks the length first, it raises promptly.
+    If it instead called readexactly(length) it would block forever waiting
+    on a body that never comes — so we wrap the call in a short timeout and
+    assert it raises ValueError, NOT TimeoutError. A TimeoutError would mean
+    the loop tried to read the body (the bug we are guarding against)."""
+
+    async def go():
+        reader = asyncio.StreamReader()
+        # Advertise a body far larger than MAX, then provide NO body bytes
+        # and DO NOT feed EOF — this mirrors the real DoS: a peer that sends
+        # a huge length and then stalls. A loop that awaited the body here
+        # would hang until the timeout fires (-> TimeoutError); the guard
+        # must instead raise ValueError immediately off the header alone.
+        reader.feed_data(struct.pack("=I", MAX_FRAME_SIZE + 1))
+
+        class _NullWriter:
+            def write(self, _data):
+                pass
+
+            async def drain(self):
+                pass
+
+        client = GreetdClient(sock_path="/unused")
+        client._reader = reader
+        client._writer = _NullWriter()
+
+        # If the loop wrongly awaits the (missing) body, this times out.
+        await asyncio.wait_for(
+            client._send({"type": "create_session", "username": "admin"}),
+            timeout=2.0,
+        )
+
+    with pytest.raises(ValueError, match="maximum"):
+        asyncio.run(go())
 
 
 # ---------------------------------------------------------------------------
