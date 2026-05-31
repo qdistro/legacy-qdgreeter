@@ -41,27 +41,24 @@ qdgreeter/
 │   ├── app.py           QGuiApplication + QML
 │   ├── controller.py    GreetController (greetd JSON client)
 │   ├── greetd.py        UNIX-socket JSON protocol to greetd
-│   └── keysyms.py
 ├── qml/
 │   ├── Main.qml
-│   └── GreetUI.qml      Reuses qs.Commons / qs.Widgets
+│   └── GreetUI.qml
 ├── systemd/
 │   └── qdgreeter.service
 └── pyproject.toml
 ```
 
-Reuses qdshell's `qs.Commons` / `qs.Widgets` via the same
-QDLOCKER_QDSHELL_PATH-style env override (here:
-`QDGREETER_QDSHELL_PATH`).
+The QML is intentionally self-contained for the preview build.
 
 ## Status
 
 Implemented preview. The greeter has a PyQt/QML app entrypoint, a controller
 driving greetd auth flow, and a length-prefixed greetd JSON protocol client in
 `qdgreeter/greetd.py`. Unit tests cover the wire format, fake-greetd
-round-trips, session selection, password prompt handling, retry/cancel, and
-password log redaction. Remaining work is packaging/integration hardening, not
-the basic greetd client.
+round-trips, password prompt handling, retry/cancel, and password log
+redaction. Remaining work is packaging/integration hardening and richer
+session selection, not the basic greetd client.
 
 ## Why not just reuse qdlocker on first boot?
 
