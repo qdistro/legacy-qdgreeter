@@ -56,10 +56,12 @@ QDLOCKER_QDSHELL_PATH-style env override (here:
 
 ## Status
 
-Skeleton only — see `qdgreeter/app.py` + `qml/GreetUI.qml`. The
-greetd JSON protocol client is the work item:
-<https://man.sr.ht/~kennylevinsen/greetd/greetd-ipc.7.scd>.
-Auth flow shape is documented in `qdgreeter/greetd.py`.
+Implemented preview. The greeter has a PyQt/QML app entrypoint, a controller
+driving greetd auth flow, and a length-prefixed greetd JSON protocol client in
+`qdgreeter/greetd.py`. Unit tests cover the wire format, fake-greetd
+round-trips, session selection, password prompt handling, retry/cancel, and
+password log redaction. Remaining work is packaging/integration hardening, not
+the basic greetd client.
 
 ## Why not just reuse qdlocker on first boot?
 
