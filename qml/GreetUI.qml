@@ -21,6 +21,26 @@ Item {
   id: root
   property var controller
 
+  function forcePasswordFocus() {
+    passwordInput.forceActiveFocus()
+  }
+
+  function handleTtySwitch(event) {
+    if (!controller)
+      return false
+    if (!(event.modifiers & Qt.ControlModifier) || !(event.modifiers & Qt.AltModifier))
+      return false
+
+    const first = Qt.Key_F1
+    const last = Qt.Key_F6
+    if (event.key < first || event.key > last)
+      return false
+
+    controller.switchToTty(event.key - first + 1)
+    event.accepted = true
+    return true
+  }
+
   Rectangle {
     anchors.fill: parent
     color: Color.mSurface
@@ -92,16 +112,34 @@ Item {
         echoMode: TextInput.Password
         passwordCharacter: "•"
         enabled: controller ? !controller.busy : false
+        focus: true
+        activeFocusOnTab: true
         text: controller ? controller.currentText : ""
         onTextChanged: if (controller) controller.currentText = text
+        Connections {
+          target: controller
+          function onCurrentTextChanged() {
+            if (passwordInput.text !== controller.currentText)
+              passwordInput.text = controller.currentText
+          }
+        }
         Keys.onPressed: function (event) {
+          if (root.handleTtySwitch(event))
+            return
           if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             if (controller) controller.submit()
             event.accepted = true
           }
         }
-        Component.onCompleted: forceActiveFocus()
+        Component.onCompleted: root.forcePasswordFocus()
       }
+    }
+
+    Timer {
+      interval: 250
+      repeat: true
+      running: true
+      onTriggered: if (!passwordInput.activeFocus) passwordInput.forceActiveFocus()
     }
 
     // Submit button. The Enter key on the password field is the

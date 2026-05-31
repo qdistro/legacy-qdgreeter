@@ -204,6 +204,39 @@ def test_username_defaults_to_admin(qapp):
     assert client.sent[0]["username"] == "admin"
 
 
+def test_switch_to_tty_runs_chvt_for_valid_tty(qapp, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
+        calls.append((cmd, kwargs))
+
+        class Result:
+            returncode = 0
+
+        return Result()
+
+    monkeypatch.setattr("qdgreeter.controller.subprocess.run", fake_run)
+
+    ctl = GreetController(client=_FakeClient([]))
+    assert ctl.switchToTty(4) is True
+
+    assert calls
+    assert calls[0][0] == ["/usr/bin/chvt", "4"]
+
+
+def test_switch_to_tty_rejects_invalid_tty(qapp, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "qdgreeter.controller.subprocess.run",
+        lambda *args, **kwargs: calls.append(args),
+    )
+
+    ctl = GreetController(client=_FakeClient([]))
+    assert ctl.switchToTty(0) is False
+    assert ctl.switchToTty(13) is False
+    assert calls == []
+
+
 @pytest.mark.cheat_aware(
     protects="the password is only ever sent in response to a `secret` "
     "prompt; `visible`/non-secret prompts get a null ack",

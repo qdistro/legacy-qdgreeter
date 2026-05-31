@@ -11,6 +11,13 @@ Window {
   GreetUI {
     id: greetUI
     anchors.fill: parent
-    controller: controller
+    controller: greetController
   }
+
+  Component.onCompleted: {
+    requestActivate()
+    greetUI.forcePasswordFocus()
+  }
+
+  onActiveChanged: if (active) greetUI.forcePasswordFocus()
 }

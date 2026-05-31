@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import subprocess
 import threading
 
 from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal, pyqtSlot
@@ -43,10 +44,10 @@ DEFAULT_SESSION_CMD = os.environ.get(
 class GreetController(QObject):
     succeeded = pyqtSignal()
     failed = pyqtSignal()
-    _currentTextChanged = pyqtSignal()
-    _statusMessageChanged = pyqtSignal()
-    _busyChanged = pyqtSignal()
-    _usernameChanged = pyqtSignal()
+    currentTextChanged = pyqtSignal()
+    statusMessageChanged = pyqtSignal()
+    busyChanged = pyqtSignal()
+    usernameChanged = pyqtSignal()
 
     def __init__(
         self,
@@ -63,11 +64,11 @@ class GreetController(QObject):
         self._busy = False
         self._client = client or GreetdClient()
 
-    @pyqtProperty(str, notify=_usernameChanged)
+    @pyqtProperty(str, notify=usernameChanged)
     def username(self) -> str:
         return self._username
 
-    @pyqtProperty(str, notify=_currentTextChanged)
+    @pyqtProperty(str, notify=currentTextChanged)
     def currentText(self) -> str:
         return self._current_text
 
@@ -76,13 +77,13 @@ class GreetController(QObject):
         if value == self._current_text:
             return
         self._current_text = value
-        self._currentTextChanged.emit()
+        self.currentTextChanged.emit()
 
-    @pyqtProperty(str, notify=_statusMessageChanged)
+    @pyqtProperty(str, notify=statusMessageChanged)
     def statusMessage(self) -> str:
         return self._status_message
 
-    @pyqtProperty(bool, notify=_busyChanged)
+    @pyqtProperty(bool, notify=busyChanged)
     def busy(self) -> bool:
         return self._busy
 
@@ -90,13 +91,13 @@ class GreetController(QObject):
         if msg == self._status_message:
             return
         self._status_message = msg
-        self._statusMessageChanged.emit()
+        self.statusMessageChanged.emit()
 
     def _set_busy(self, value: bool) -> None:
         if value == self._busy:
             return
         self._busy = value
-        self._busyChanged.emit()
+        self.busyChanged.emit()
 
     @pyqtSlot()
     def submit(self) -> None:
@@ -126,6 +127,40 @@ class GreetController(QObject):
                 self._set_busy(False)
 
         threading.Thread(target=_run, name="qdgreeter-auth", daemon=True).start()
+
+    @pyqtSlot(str)
+    def appendText(self, text: str) -> None:
+        if text:
+            self.currentText = self._current_text + text
+
+    @pyqtSlot()
+    def backspace(self) -> None:
+        self.currentText = self._current_text[:-1]
+
+    @pyqtSlot()
+    def clearText(self) -> None:
+        self.currentText = ""
+
+    @pyqtSlot(int, result=bool)
+    def switchToTty(self, tty: int) -> bool:
+        """Switch away from the EGLFS greeter when Ctrl+Alt+Fx is pressed."""
+        if tty < 1 or tty > 12:
+            log.warning("ignoring invalid tty switch request: tty%s", tty)
+            return False
+        try:
+            result = subprocess.run(
+                ["/usr/bin/chvt", str(tty)],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            log.exception("failed to execute chvt for tty%s", tty)
+            return False
+        if result.returncode != 0:
+            log.warning("chvt tty%s failed with rc=%s", tty, result.returncode)
+            return False
+        return True
 
     async def _auth_flow(self, password: str) -> None:
         try:
