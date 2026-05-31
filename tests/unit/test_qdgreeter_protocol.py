@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+import qdgreeter.greetd as greetd_mod
 from qdgreeter.greetd import (
     MAX_FRAME_SIZE,
     GreetdClient,
@@ -217,6 +218,75 @@ def test_read_loop_rejects_oversized_header_before_reading_body():
 
     with pytest.raises(ValueError, match="maximum"):
         asyncio.run(go())
+
+
+def test_read_loop_times_out_when_header_never_arrives(monkeypatch):
+    monkeypatch.setattr(greetd_mod, "IPC_TIMEOUT_S", 0.05)
+
+    async def go():
+        reader = asyncio.StreamReader()
+
+        class _NullWriter:
+            closed = False
+
+            def write(self, _data):
+                pass
+
+            async def drain(self):
+                pass
+
+            def close(self):
+                self.closed = True
+
+            async def wait_closed(self):
+                pass
+
+        writer = _NullWriter()
+        client = GreetdClient(sock_path="/unused")
+        client._reader = reader
+        client._writer = writer
+
+        with pytest.raises(asyncio.TimeoutError):
+            await client._send({"type": "create_session", "username": "admin"})
+        assert writer.closed is True
+        assert client.connected is False
+
+    asyncio.run(go())
+
+
+def test_read_loop_times_out_when_valid_length_body_stalls(monkeypatch):
+    monkeypatch.setattr(greetd_mod, "IPC_TIMEOUT_S", 0.05)
+
+    async def go():
+        reader = asyncio.StreamReader()
+        reader.feed_data(struct.pack("=I", 16))
+
+        class _NullWriter:
+            closed = False
+
+            def write(self, _data):
+                pass
+
+            async def drain(self):
+                pass
+
+            def close(self):
+                self.closed = True
+
+            async def wait_closed(self):
+                pass
+
+        writer = _NullWriter()
+        client = GreetdClient(sock_path="/unused")
+        client._reader = reader
+        client._writer = writer
+
+        with pytest.raises(asyncio.TimeoutError):
+            await client._send({"type": "create_session", "username": "admin"})
+        assert writer.closed is True
+        assert client.connected is False
+
+    asyncio.run(go())
 
 
 # ---------------------------------------------------------------------------

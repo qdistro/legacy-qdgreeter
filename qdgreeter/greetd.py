@@ -46,6 +46,11 @@ _HEADER_SIZE = struct.calcsize(_HEADER_FMT)
 # allocating or awaiting the body — rather than trust the peer.
 MAX_FRAME_SIZE = 1 << 20  # 1 MiB
 
+# Bound every individual IPC write/read await. A valid-size frame whose
+# peer stalls mid-header or mid-body must fail closed instead of pinning
+# the auth worker forever.
+IPC_TIMEOUT_S = 5.0
+
 
 def encode_frame(payload: dict[str, Any]) -> bytes:
     """Serialize a greetd JSON payload as a length-prefixed frame."""
@@ -127,19 +132,29 @@ class GreetdClient:
     async def _send(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self._writer is None or self._reader is None:
             raise RuntimeError("greetd client not connected; call connect() first")
-        frame = encode_frame(payload)
-        self._writer.write(frame)
-        await self._writer.drain()
-        header = await self._reader.readexactly(_HEADER_SIZE)
-        (length,) = struct.unpack(_HEADER_FMT, header)
-        # Reject an oversized / nonsense advertised length BEFORE awaiting
-        # the body. A hostile or buggy greetd advertising a huge length
-        # would otherwise make readexactly() buffer up to 4 GiB while
-        # waiting on a body that never arrives — a memory-exhaustion DoS
-        # or indefinite hang. Fail closed.
-        _check_frame_length(length)
-        body = await self._reader.readexactly(length)
-        reply = json.loads(body)
+        try:
+            frame = encode_frame(payload)
+            self._writer.write(frame)
+            await asyncio.wait_for(self._writer.drain(), timeout=IPC_TIMEOUT_S)
+            header = await asyncio.wait_for(
+                self._reader.readexactly(_HEADER_SIZE),
+                timeout=IPC_TIMEOUT_S,
+            )
+            (length,) = struct.unpack(_HEADER_FMT, header)
+            # Reject an oversized / nonsense advertised length BEFORE awaiting
+            # the body. A hostile or buggy greetd advertising a huge length
+            # would otherwise make readexactly() buffer up to 4 GiB while
+            # waiting on a body that never arrives — a memory-exhaustion DoS
+            # or indefinite hang. Fail closed.
+            _check_frame_length(length)
+            body = await asyncio.wait_for(
+                self._reader.readexactly(length),
+                timeout=IPC_TIMEOUT_S,
+            )
+            reply = json.loads(body)
+        except asyncio.TimeoutError:
+            await self.close()
+            raise
         # Never log the payload itself — `post_auth_message_response`
         # carries the plaintext password. Log the type for tracing,
         # nothing more.

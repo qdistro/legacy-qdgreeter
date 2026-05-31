@@ -144,6 +144,10 @@ class GreetController(QObject):
             self._set_status(exc.description)
             await self._cancel_quiet()
             self.failed.emit()
+        except asyncio.TimeoutError:
+            log.exception("greetd IPC timed out")
+            self._set_status("greetd timed out; retry login")
+            self.failed.emit()
         except (
             asyncio.IncompleteReadError,
             ConnectionResetError,
