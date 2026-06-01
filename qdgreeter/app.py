@@ -7,10 +7,12 @@ then takes over and starts the session).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import fcntl
 import struct
+import subprocess
 import sys
 from pathlib import Path
 from typing import BinaryIO
@@ -245,6 +247,86 @@ class _RawKeyboardBridge(QObject):
             self._controller.appendText(char)
 
 
+def _running_virtualized() -> bool:
+    """Best-effort: are we inside a VM/container?
+
+    Mirrors qdistro deploy/qdistro-startlxqtwayland.sh, which only forces
+    software cursors (``WLR_NO_HARDWARE_CURSORS=1``) under
+    ``systemd-detect-virt --quiet``. If the tool is missing or errors we
+    assume virtualized: an invisible pointer on a login screen is a worse
+    failure than an unnecessary software cursor on bare metal.
+    """
+    try:
+        return (
+            subprocess.run(
+                ["systemd-detect-virt", "--quiet"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode
+            == 0
+        )
+    except OSError:
+        return True
+
+
+def _ensure_eglfs_software_cursor() -> None:
+    """Make the eglfs/KMS pointer cursor visible on virtual GPUs.
+
+    eglfs_kms draws the pointer on a DRM *hardware* cursor plane by
+    default. The qdistro VM template (QEMU/KVM) — like most virtual GPUs
+    — does not scan that plane out, so the cursor is invisible even
+    though Qt thinks it is drawing one. This is the same class of bug the
+    wlroots fallback session sidesteps with ``WLR_NO_HARDWARE_CURSORS=1``
+    (see qdistro deploy/qdistro-startlxqtwayland.sh) — a fix that was
+    applied to that path but never to this eglfs greeter.
+
+    The eglfs equivalent is a KMS config file with ``"hwcursor": false``,
+    which makes Qt composite the cursor into the framebuffer with the GL
+    renderer instead — that always shows. We write a minimal config (no
+    device/outputs, so Qt keeps auto-probing) into ``XDG_RUNTIME_DIR`` and
+    point ``QT_QPA_EGLFS_KMS_CONFIG`` at it.
+
+    Like the wlroots precedent, this only kicks in under virtualization,
+    so real hardware keeps its (working, cheaper) hardware cursor plane.
+
+    Guard rails:
+    - no-op unless we are actually on an eglfs platform, so a desktop
+      ``offscreen``/``wayland`` test run is untouched;
+    - never clobbers an operator-supplied ``QT_QPA_EGLFS_KMS_CONFIG`` —
+      if someone already tuned the KMS config we defer to it entirely;
+    - no-op on bare metal (see _running_virtualized).
+
+    Note this only renders the cursor; it must still be *driven*. eglfs
+    only creates a cursor at all when an input device exists, so the
+    greetd command must NOT pass ``QT_QPA_EGLFS_DISABLE_INPUT`` — Qt's
+    libinput pointer is what gives the cursor a position. The keyboard is
+    still owned by the raw-evdev bridge (it EVIOCGRABs the keyboard before
+    Qt starts), so re-enabling Qt input does not double-type.
+    """
+    if "eglfs" not in os.environ.get("QT_QPA_PLATFORM", ""):
+        return
+    if os.environ.get("QT_QPA_EGLFS_KMS_CONFIG"):
+        log.debug("eglfs KMS config already set; leaving cursor handling to it")
+        return
+    if not _running_virtualized():
+        log.debug("bare metal: keeping eglfs hardware cursor")
+        return
+
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    config_path = Path(runtime_dir) / "qdgreeter-eglfs-kms.json"
+    try:
+        config_path.write_text(json.dumps({"hwcursor": False}))
+    except OSError:
+        log.warning(
+            "could not write eglfs KMS config to %s; cursor may be invisible",
+            config_path,
+            exc_info=True,
+        )
+        return
+    os.environ["QT_QPA_EGLFS_KMS_CONFIG"] = str(config_path)
+    log.debug("eglfs software cursor enabled via %s", config_path)
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=os.environ.get("QDGREETER_LOG", "INFO"),
@@ -253,6 +335,9 @@ def main(argv: list[str] | None = None) -> int:
     argv = argv if argv is not None else sys.argv
     QCoreApplication.setOrganizationName("qdistro")
     QCoreApplication.setApplicationName("qdgreeter")
+    # Must run before QGuiApplication: Qt reads QT_QPA_EGLFS_KMS_CONFIG
+    # when the eglfs platform plugin initialises during construction.
+    _ensure_eglfs_software_cursor()
     raw_keyboard_file = None
     raw_keyboard_device = ""
     for candidate in _raw_keyboard_candidates():
