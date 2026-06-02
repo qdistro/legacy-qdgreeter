@@ -6,6 +6,17 @@ styling story with sibling repos
 [qdlocker](https://codeberg.org/qdistro/qdlocker) and
 [qdshell](https://codeberg.org/qdistro/qdshell).
 
+## Role in qdistro
+
+qdgreeter owns only the boot login path. It authenticates the single qdistro
+owner through greetd/PAM and starts the qdwin session stack. After a successful
+login, runtime locking belongs to [qdlocker](../qdlocker); the compositor should
+remain locked until qdlocker has authenticated and called the locker protocol.
+
+Keeping greeter and locker separate matches the current session docs: boot
+authentication launches a session, while runtime re-auth unlocks an already
+running compositor.
+
 ## Relationship to qdlocker
 
 Per `qdistro/doc/sessions.md`, the compositor on tty3 starts in
