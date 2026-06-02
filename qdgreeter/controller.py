@@ -23,7 +23,16 @@ import os
 import subprocess
 import threading
 
-from PyQt6.QtCore import QObject, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import (
+    QMetaObject,
+    QObject,
+    QThread,
+    Q_ARG,
+    Qt,
+    pyqtProperty,
+    pyqtSignal,
+    pyqtSlot,
+)
 
 from .greetd import GreetdClient, GreetdError
 
@@ -87,17 +96,84 @@ class GreetController(QObject):
     def busy(self) -> bool:
         return self._busy
 
+    # ------------------------------------------------------------------
+    # GUI-thread-only state mutators.
+    #
+    # These are the ONLY places that touch bound Qt property storage or
+    # emit the controller's signals. They are pyqtSlots so the auth
+    # worker thread can hand work back to the GUI thread via
+    # QMetaObject.invokeMethod(..., Qt.QueuedConnection) — see the
+    # _post_* marshaling helpers below. Calling them directly is only
+    # legal from the thread the controller lives on (the GUI thread).
+    # ------------------------------------------------------------------
+    @pyqtSlot(str)
     def _set_status(self, msg: str) -> None:
         if msg == self._status_message:
             return
         self._status_message = msg
         self.statusMessageChanged.emit()
 
+    @pyqtSlot(bool)
     def _set_busy(self, value: bool) -> None:
         if value == self._busy:
             return
         self._busy = value
         self.busyChanged.emit()
+
+    @pyqtSlot()
+    def _emit_succeeded(self) -> None:
+        self.succeeded.emit()
+
+    @pyqtSlot()
+    def _emit_failed(self) -> None:
+        self.failed.emit()
+
+    # ------------------------------------------------------------------
+    # Cross-thread marshaling.
+    #
+    # The auth worker thread calls these instead of the slots above. If
+    # we're already on the controller's (GUI) thread they run inline so
+    # synchronous test drivers and the QML auto-connection path keep
+    # their existing semantics; otherwise the call is queued onto the
+    # GUI thread's event loop so the actual QObject mutation / signal
+    # emission happens there, never on the worker thread.
+    # ------------------------------------------------------------------
+    def _on_gui_thread(self) -> bool:
+        return self.thread() is QThread.currentThread()
+
+    def _post_status(self, msg: str) -> None:
+        if self._on_gui_thread():
+            self._set_status(msg)
+        else:
+            QMetaObject.invokeMethod(
+                self, "_set_status", Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, msg),
+            )
+
+    def _post_busy(self, value: bool) -> None:
+        if self._on_gui_thread():
+            self._set_busy(value)
+        else:
+            QMetaObject.invokeMethod(
+                self, "_set_busy", Qt.ConnectionType.QueuedConnection,
+                Q_ARG(bool, value),
+            )
+
+    def _post_succeeded(self) -> None:
+        if self._on_gui_thread():
+            self._emit_succeeded()
+        else:
+            QMetaObject.invokeMethod(
+                self, "_emit_succeeded", Qt.ConnectionType.QueuedConnection,
+            )
+
+    def _post_failed(self) -> None:
+        if self._on_gui_thread():
+            self._emit_failed()
+        else:
+            QMetaObject.invokeMethod(
+                self, "_emit_failed", Qt.ConnectionType.QueuedConnection,
+            )
 
     @pyqtSlot()
     def submit(self) -> None:
@@ -111,20 +187,18 @@ class GreetController(QObject):
         if self._busy:
             return
         password = self._current_text
-        self._set_busy(True)
-        self._set_status("")
+        # We're on the GUI thread here, so these mutate directly.
+        self._post_busy(True)
+        self._post_status("")
 
         def _run() -> None:
             try:
                 asyncio.run(self._auth_flow(password))
             finally:
-                # Mutating bound Qt properties from a foreign thread is
-                # only safe for the small set of writes we do here
-                # (no QML connections issue cross-thread signals
-                # under PyQt6's auto-connection rules) — but the
-                # bool/string property writes will queue a notify
-                # back onto the GUI thread, which is what we want.
-                self._set_busy(False)
+                # Runs on the worker thread: marshal the busy reset back
+                # onto the GUI thread rather than touching the bound Qt
+                # property from here.
+                self._post_busy(False)
 
         threading.Thread(target=_run, name="qdgreeter-auth", daemon=True).start()
 
@@ -170,19 +244,19 @@ class GreetController(QObject):
             if reply.get("type") == "success":
                 start = await self._client.start_session(self._session_cmd)
                 if start.get("type") == "success":
-                    self.succeeded.emit()
+                    self._post_succeeded()
                     return
                 await self._handle_error_reply(start)
             else:
                 await self._handle_error_reply(reply)
         except GreetdError as exc:
-            self._set_status(exc.description)
+            self._post_status(exc.description)
             await self._cancel_quiet()
-            self.failed.emit()
+            self._post_failed()
         except asyncio.TimeoutError:
             log.exception("greetd IPC timed out")
-            self._set_status("greetd timed out; retry login")
-            self.failed.emit()
+            self._post_status("greetd timed out; retry login")
+            self._post_failed()
         except (
             asyncio.IncompleteReadError,
             ConnectionResetError,
@@ -194,17 +268,17 @@ class GreetController(QObject):
             # failed" misleads the operator. Don't chase the closed
             # socket with cancel_session; just surface the disconnect.
             log.exception("greetd disconnected mid-flow")
-            self._set_status("greetd disconnected; retry login")
-            self.failed.emit()
+            self._post_status("greetd disconnected; retry login")
+            self._post_failed()
         except Exception:  # noqa: BLE001
             # Don't include the password or any payload in the log;
             # `exc` is from socket / json layer, password isn't in it.
             # Don't echo `str(exc)` into the UI — it can carry socket
             # paths or reply bytes; keep details in the journal.
             log.exception("greetd flow raised")
-            self._set_status("Authentication failed — see journalctl")
+            self._post_status("Authentication failed — see journalctl")
             await self._cancel_quiet()
-            self.failed.emit()
+            self._post_failed()
         finally:
             await self._client.close()
 
@@ -233,16 +307,16 @@ class GreetController(QObject):
                 # stack advances; the user can retry if they need a real
                 # response collected.
                 if message:
-                    self._set_status(message)
+                    self._post_status(message)
                 reply = await self._client.post_auth(None)
         return reply
 
     async def _handle_error_reply(self, reply: dict) -> None:
         if reply.get("type") == "error":
             description = reply.get("description", "Authentication failed")
-            self._set_status(description)
+            self._post_status(description)
         else:
-            self._set_status(reply.get("description", "Authentication failed"))
+            self._post_status(reply.get("description", "Authentication failed"))
         # Cancel the session so greetd returns to a clean state and the
         # next submit() can retry from create_session. Per greetd-ipc(7),
         # an `error` reply (auth_error or error) leaves the session in
@@ -252,7 +326,7 @@ class GreetController(QObject):
         # the top of this module ("error+auth_error → cancel_session").
         # _cancel_quiet swallows any post-error socket errors.
         await self._cancel_quiet()
-        self.failed.emit()
+        self._post_failed()
 
     async def _cancel_quiet(self) -> None:
         try:
