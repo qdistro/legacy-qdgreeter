@@ -292,6 +292,96 @@ def test_visible_auth_message_never_receives_password(qapp):
     assert visible_acks[1]["response"] == secret_password
 
 
+@pytest.mark.cheat_aware(
+    protects="a SECOND `secret` prompt does NOT get the first password "
+    "replayed — the greeter fails closed (cancel + failed) instead",
+    severity="critical",
+    cheats=[
+        "answer every secret prompt with the same password",
+        "treat the second secret as success and reach start_session",
+        "drop the cancel_session / fired['fail'] assertions",
+    ],
+    consequence="the typed password is replayed into a different "
+    "second-factor challenge it was never entered for, and a "
+    "multi-prompt PAM stack is silently degraded to single-factor",
+)
+def test_second_secret_prompt_fails_closed_without_replay(qapp):
+    """A multi-prompt PAM stack (password + a second secret challenge)
+    must NOT receive the first password as the second answer. The
+    greeter collects one secret per attempt, so it fails closed:
+    cancel_session + failed, and the second post_auth never carries the
+    password."""
+    secret_password = "hunter2-no-replay"
+    client = _FakeClient(
+        [
+            {"type": "auth_message", "auth_message_type": "secret", "auth_message": "Password:"},
+            {"type": "auth_message", "auth_message_type": "secret", "auth_message": "OTP:"},
+            {"type": "success"},  # reply to cancel_session (must not be reached as start)
+        ]
+    )
+    ctl = GreetController(client=client)
+    fired = {"ok": 0, "fail": 0}
+    ctl.succeeded.connect(lambda: fired.__setitem__("ok", fired["ok"] + 1))
+    ctl.failed.connect(lambda: fired.__setitem__("fail", fired["fail"] + 1))
+
+    _run(ctl, secret_password)
+
+    # Failed, never succeeded, never reached start_session.
+    assert fired == {"ok": 0, "fail": 1}
+    assert all(m.get("type") != "start_session" for m in client.sent)
+    # The session was cancelled to return greetd to a clean state.
+    assert {"type": "cancel_session"} in client.sent
+    # Exactly ONE post_auth carried the password — the first secret.
+    post_auths = [
+        m for m in client.sent
+        if m.get("type") == "post_auth_message_response"
+    ]
+    pw_responses = [m for m in post_auths if m.get("response") == secret_password]
+    assert len(pw_responses) == 1, (
+        f"password sent {len(pw_responses)} times; must be exactly once: "
+        f"{post_auths!r}"
+    )
+    # The password must NEVER have been replayed as a second answer; only
+    # the first secret is answered before failing closed.
+    assert len(post_auths) == 1, (
+        f"expected a single post_auth (first secret only) before failing "
+        f"closed, got: {post_auths!r}"
+    )
+    # The user sees a clear, actionable reason rather than a bare failure.
+    assert ctl.statusMessage
+
+
+def test_second_secret_after_info_still_fails_closed(qapp):
+    """An interleaved non-secret prompt (info) between the two secret
+    prompts must not reset the one-secret budget: the second `secret`
+    still fails closed and the info ack stays null."""
+    secret_password = "topsecret"
+    client = _FakeClient(
+        [
+            {"type": "auth_message", "auth_message_type": "secret", "auth_message": "Password:"},
+            {"type": "auth_message", "auth_message_type": "info", "auth_message": "Enter token"},
+            {"type": "auth_message", "auth_message_type": "secret", "auth_message": "Token:"},
+            {"type": "success"},  # reply to cancel_session
+        ]
+    )
+    ctl = GreetController(client=client)
+    fired = {"ok": 0, "fail": 0}
+    ctl.succeeded.connect(lambda: fired.__setitem__("ok", fired["ok"] + 1))
+    ctl.failed.connect(lambda: fired.__setitem__("fail", fired["fail"] + 1))
+
+    _run(ctl, secret_password)
+
+    assert fired == {"ok": 0, "fail": 1}
+    post_auths = [
+        m for m in client.sent
+        if m.get("type") == "post_auth_message_response"
+    ]
+    # First secret: password. Then info: null ack. Then we fail closed
+    # before answering the second secret -> exactly two post_auths.
+    assert [m.get("response") for m in post_auths] == [secret_password, None]
+    assert {"type": "cancel_session"} in client.sent
+
+
 def test_connection_loss_surfaces_distinct_message(qapp):
     """`IncompleteReadError` / `ConnectionResetError` mid-flow must not
     be relabeled as 'Authentication failed' — the password may have

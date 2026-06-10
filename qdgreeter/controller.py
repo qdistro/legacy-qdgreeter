@@ -49,6 +49,18 @@ DEFAULT_SESSION_CMD = os.environ.get(
     "QDGREETER_SESSION_CMD", "/usr/local/bin/qdwin-session-launcher"
 ).split()
 
+# Shown when a PAM stack issues a second `secret` prompt within one
+# auth exchange (e.g. password + a separate OTP/second-factor
+# challenge). The greeter collects a single secret per submit(), so it
+# has no answer for the additional challenge. Replaying the first
+# secret would (a) almost always fail the second factor and (b) feed
+# the typed password into a prompt it was never entered for — a secret
+# is replayed into a different challenge. We fail closed instead.
+MULTI_SECRET_UNSUPPORTED_MSG = (
+    "This account needs more than one secret to log in, which this "
+    "greeter can't collect — use a console login (Ctrl+Alt+F2)."
+)
+
 
 class GreetController(QObject):
     succeeded = pyqtSignal()
@@ -287,17 +299,40 @@ class GreetController(QObject):
     ) -> dict:
         """Walk the auth_message ↔ post_auth_message_response loop.
 
-        For `secret` we send the user-entered password (single attempt
-        per submit() — repeated greetd prompts within the same auth_flow
-        re-use the same string; if greetd needs a different challenge
-        the MVP fails and the user retries).
-        For `info` / `error` types we acknowledge with a null response
-        so greetd can advance to the next stage.
+        The greeter collects exactly one secret per submit(). We answer
+        the FIRST `secret` prompt with the user-entered password. If the
+        PAM stack issues a SECOND `secret` prompt within the same
+        exchange (a multi-prompt stack: password + a separate
+        second-factor challenge), we have no answer for it. Replaying the
+        first secret would feed the typed password into a challenge it
+        was never meant for and would almost always fail the second
+        factor anyway, so we fail CLOSED: cancel the session and surface
+        a clear error instead of replaying. Returning a synthetic `error`
+        reply routes through `_handle_error_reply`, which cancels and
+        emits `failed` exactly like a real greetd error.
+
+        For `info` / `error` (non-secret) types we acknowledge with a
+        null response so greetd can advance to the next stage; we NEVER
+        replay the password into a non-secret prompt.
         """
+        secret_answered = False
         while reply.get("type") == "auth_message":
             kind = reply.get("auth_message_type", "secret")
             message = reply.get("auth_message", "")
             if kind == "secret":
+                if secret_answered:
+                    # Second secret prompt: we have no answer. Fail closed
+                    # rather than replaying the first password.
+                    log.warning(
+                        "PAM issued a second secret prompt; greeter "
+                        "collects one secret per attempt — failing closed"
+                    )
+                    return {
+                        "type": "error",
+                        "error_type": "error",
+                        "description": MULTI_SECRET_UNSUPPORTED_MSG,
+                    }
+                secret_answered = True
                 reply = await self._client.post_auth(password)
             else:
                 # visible / info / error: per greetd-ipc(7), `visible`
