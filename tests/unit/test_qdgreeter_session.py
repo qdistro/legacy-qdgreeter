@@ -13,7 +13,6 @@ import sys
 
 import pytest
 
-
 _HEADLESS = sys.platform.startswith("linux") and not os.environ.get("DISPLAY")
 if _HEADLESS:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -21,7 +20,6 @@ if _HEADLESS:
 
 PyQt6 = pytest.importorskip("PyQt6", reason="PyQt6 not installed")
 from PyQt6.QtCore import QCoreApplication  # noqa: E402
-
 from qdgreeter.controller import GreetController  # noqa: E402
 
 

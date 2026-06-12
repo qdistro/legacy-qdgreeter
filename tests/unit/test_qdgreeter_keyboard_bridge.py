@@ -27,7 +27,6 @@ import sys
 
 import pytest
 
-
 _HEADLESS = sys.platform.startswith("linux") and not os.environ.get("DISPLAY")
 if _HEADLESS:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -35,9 +34,7 @@ if _HEADLESS:
 
 PyQt6 = pytest.importorskip("PyQt6", reason="PyQt6 not installed")
 from PyQt6.QtCore import QCoreApplication  # noqa: E402
-
 from qdgreeter.app import _RawKeyboardBridge  # noqa: E402
-
 
 # evdev keycodes used by app.py's _handle_key (kept here so the test
 # documents the contract it pins). These match the real source.

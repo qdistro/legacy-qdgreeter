@@ -7,10 +7,10 @@ then takes over and starts the session).
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
-import fcntl
 import struct
 import subprocess
 import sys

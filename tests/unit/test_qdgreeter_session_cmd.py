@@ -20,7 +20,6 @@ import sys
 
 import pytest
 
-
 _HEADLESS = sys.platform.startswith("linux") and not os.environ.get("DISPLAY")
 if _HEADLESS:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

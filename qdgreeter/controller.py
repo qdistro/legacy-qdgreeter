@@ -24,11 +24,11 @@ import subprocess
 import threading
 
 from PyQt6.QtCore import (
+    Q_ARG,
     QMetaObject,
     QObject,
-    QThread,
-    Q_ARG,
     Qt,
+    QThread,
     pyqtProperty,
     pyqtSignal,
     pyqtSlot,

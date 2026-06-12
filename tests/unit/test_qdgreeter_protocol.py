@@ -16,7 +16,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-
 import qdgreeter.greetd as greetd_mod
 from qdgreeter.greetd import (
     MAX_FRAME_SIZE,
@@ -24,7 +23,6 @@ from qdgreeter.greetd import (
     decode_frame,
     encode_frame,
 )
-
 
 # ---------------------------------------------------------------------------
 # Frame codec (pure, no I/O).
