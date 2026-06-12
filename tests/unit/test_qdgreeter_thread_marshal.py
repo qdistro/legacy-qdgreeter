@@ -35,7 +35,7 @@ if _HEADLESS:
 
 
 PyQt6 = pytest.importorskip("PyQt6", reason="PyQt6 not installed")
-from PyQt6.QtCore import QCoreApplication, QThread, QTimer  # noqa: E402
+from PyQt6.QtCore import QCoreApplication, QThread  # noqa: E402
 from qdgreeter.controller import GreetController  # noqa: E402
 
 
@@ -117,7 +117,7 @@ class _ThreadTrackingController(GreetController):
         super()._set_status(msg)
 
     def _set_busy(self, value):
-        self._note("set_busy=%s" % value)
+        self._note(f"set_busy={value}")
         super()._set_busy(value)
 
     def _record_succeeded(self):
@@ -185,7 +185,7 @@ def test_success_results_marshalled_to_gui_thread(qapp):
 
     # The core invariant: NOTHING ran on the worker thread.
     assert ctl._thread_violations == [], (
-        "cross-thread Qt mutation detected: %r" % (ctl._thread_violations,)
+        f"cross-thread Qt mutation detected: {ctl._thread_violations!r}"
     )
     # And we actually exercised the worker (sanity: a real round-trip ran).
     assert any(m["type"] == "start_session" for m in client.sent)
@@ -213,7 +213,7 @@ def test_failure_results_marshalled_to_gui_thread(qapp):
 
     # status was set off the GUI thread originally; must now be on it.
     assert ctl._thread_violations == [], (
-        "cross-thread Qt mutation detected: %r" % (ctl._thread_violations,)
+        f"cross-thread Qt mutation detected: {ctl._thread_violations!r}"
     )
     assert ctl.statusMessage == "incorrect password"
 

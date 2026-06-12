@@ -152,7 +152,7 @@ class GreetdClient:
                 timeout=IPC_TIMEOUT_S,
             )
             reply = json.loads(body)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self.close()
             raise
         # Never log the payload itself — `post_auth_message_response`

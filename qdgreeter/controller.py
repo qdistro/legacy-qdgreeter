@@ -265,7 +265,7 @@ class GreetController(QObject):
             self._post_status(exc.description)
             await self._cancel_quiet()
             self._post_failed()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.exception("greetd IPC timed out")
             self._post_status("greetd timed out; retry login")
             self._post_failed()
