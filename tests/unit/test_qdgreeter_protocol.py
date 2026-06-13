@@ -111,6 +111,41 @@ def test_decode_frame_rejects_truncated_body():
 
 
 # ---------------------------------------------------------------------------
+# Reply-shape validation (fail-closed on malformed JSON bodies).
+#
+# greetd replies are always JSON objects with a string `type` discriminator;
+# callers downstream do `reply.get("type")`. A JSON array / null / number, or
+# an object whose `type` isn't a string, must be rejected with ValueError here
+# rather than blowing up later with AttributeError. Unknown but well-formed
+# string types stay accepted (forward-compat with newer greetd).
+# ---------------------------------------------------------------------------
+
+
+def _frame_from_json(text: str) -> bytes:
+    """Build a length-prefixed frame from an arbitrary JSON body (which
+    encode_frame, being dict-only, can't produce)."""
+    body = text.encode("utf-8")
+    return struct.pack("=I", len(body)) + body
+
+
+@pytest.mark.parametrize("body", ["[]", "null", '{"type": 1}'])
+def test_decode_frame_rejects_non_object_or_non_string_type(body):
+    """A JSON array, null, or object with non-string `type` must raise
+    ValueError (not AttributeError) so the failure is contained in the
+    codec instead of surfacing deep in the auth flow."""
+    with pytest.raises(ValueError):
+        decode_frame(_frame_from_json(body))
+
+
+def test_decode_frame_accepts_unknown_string_type():
+    """Forward-compat: a well-formed reply with an unknown but string
+    `type` must decode fine — we never reject unknown string types."""
+    frame = encode_frame({"type": "new_future_reply"})
+    payload = decode_frame(frame)
+    assert payload == {"type": "new_future_reply"}
+
+
+# ---------------------------------------------------------------------------
 # Frame-length upper bound (memory-exhaustion / malformed-frame hardening).
 #
 # The length prefix is an attacker-/bug-controlled uint32. Without a cap a
@@ -215,6 +250,37 @@ def test_read_loop_rejects_oversized_header_before_reading_body():
         )
 
     with pytest.raises(ValueError, match="maximum"):
+        asyncio.run(go())
+
+
+def test_read_loop_rejects_malformed_reply_with_value_error():
+    """_send must raise ValueError (not AttributeError) when greetd
+    returns a well-framed but malformed reply — here a JSON array, which
+    would otherwise reach `reply.get("type")` and crash.
+
+    We feed a complete frame (header + body) so the read succeeds; the
+    rejection must come from reply-shape validation, and it must happen
+    BEFORE the debug log line that itself does reply.get("type")."""
+
+    async def go():
+        reader = asyncio.StreamReader()
+        body = b"[]"
+        reader.feed_data(struct.pack("=I", len(body)) + body)
+        reader.feed_eof()
+
+        class _NullWriter:
+            def write(self, _data):
+                pass
+
+            async def drain(self):
+                pass
+
+        client = GreetdClient(sock_path="/unused")
+        client._reader = reader
+        client._writer = _NullWriter()
+        await client._send({"type": "create_session", "username": "admin"})
+
+    with pytest.raises(ValueError):
         asyncio.run(go())
 
 

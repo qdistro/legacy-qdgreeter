@@ -75,6 +75,22 @@ def _check_frame_length(length: int) -> None:
         )
 
 
+def _validate_reply(reply: Any) -> dict[str, Any]:
+    """Validate a decoded greetd reply and return it as a typed dict.
+
+    greetd replies are always JSON objects carrying a string ``type``
+    discriminator. Callers downstream do ``reply.get("type")`` and switch
+    on the value, so a reply that is a JSON array / string / number /
+    null — or an object with a non-string ``type`` — would otherwise blow
+    up with an ``AttributeError`` deep in the auth flow. Fail closed here
+    with a ``ValueError`` instead. Unknown but well-formed string ``type``
+    values are accepted (forward-compat with newer greetd).
+    """
+    if not isinstance(reply, dict) or not isinstance(reply.get("type"), str):
+        raise ValueError("greetd reply not a JSON object with string 'type'")
+    return reply
+
+
 def decode_frame(data: bytes) -> dict[str, Any]:
     """Inverse of encode_frame. Raises ValueError if the prefix lies."""
     if len(data) < _HEADER_SIZE:
@@ -86,7 +102,7 @@ def decode_frame(data: bytes) -> dict[str, Any]:
     body = data[_HEADER_SIZE : _HEADER_SIZE + length]
     if len(body) != length:
         raise ValueError(f"frame body length mismatch: header={length} actual={len(body)}")
-    return json.loads(body)
+    return _validate_reply(json.loads(body))
 
 
 class GreetdError(RuntimeError):
@@ -151,7 +167,7 @@ class GreetdClient:
                 self._reader.readexactly(length),
                 timeout=IPC_TIMEOUT_S,
             )
-            reply = json.loads(body)
+            reply = _validate_reply(json.loads(body))
         except TimeoutError:
             await self.close()
             raise

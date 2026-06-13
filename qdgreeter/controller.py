@@ -133,6 +133,10 @@ class GreetController(QObject):
         self.busyChanged.emit()
 
     @pyqtSlot()
+    def _clear_text(self) -> None:
+        self.currentText = ""
+
+    @pyqtSlot()
     def _emit_succeeded(self) -> None:
         self.succeeded.emit()
 
@@ -171,6 +175,14 @@ class GreetController(QObject):
                 Q_ARG(bool, value),
             )
 
+    def _post_clear_text(self) -> None:
+        if self._on_gui_thread():
+            self._clear_text()
+        else:
+            QMetaObject.invokeMethod(
+                self, "_clear_text", Qt.ConnectionType.QueuedConnection,
+            )
+
     def _post_succeeded(self) -> None:
         if self._on_gui_thread():
             self._emit_succeeded()
@@ -204,13 +216,22 @@ class GreetController(QObject):
         self._post_status("")
 
         def _run() -> None:
+            nonlocal password
             try:
                 asyncio.run(self._auth_flow(password))
             finally:
-                # Runs on the worker thread: marshal the busy reset back
+                # Runs on the worker thread: marshal the state resets back
                 # onto the GUI thread rather than touching the bound Qt
-                # property from here.
+                # property from here. Clear the typed password on every
+                # failure/exception path (the success path quits the app, so
+                # a lingering secret never matters there) — this single
+                # choke point covers all paths uniformly. Clear the text
+                # BEFORE dropping busy so the brief idle state can't paint
+                # the stale masked text. Drop the local too, to shorten the
+                # plaintext password's lifetime on the worker thread.
+                self._post_clear_text()
                 self._post_busy(False)
+                del password
 
         threading.Thread(target=_run, name="qdgreeter-auth", daemon=True).start()
 
