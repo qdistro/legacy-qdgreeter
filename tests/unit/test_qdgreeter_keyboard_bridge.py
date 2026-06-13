@@ -23,6 +23,7 @@ Linux evdev value semantics (from app.py):
 from __future__ import annotations
 
 import os
+import struct
 import sys
 
 import pytest
@@ -34,7 +35,8 @@ if _HEADLESS:
 
 PyQt6 = pytest.importorskip("PyQt6", reason="PyQt6 not installed")
 from PyQt6.QtCore import QCoreApplication  # noqa: E402
-from qdgreeter.app import _RawKeyboardBridge  # noqa: E402
+from qdgreeter import app as qdgreeter_app  # noqa: E402
+from qdgreeter.app import _EVIOCGRAB, _RawKeyboardBridge  # noqa: E402
 
 # evdev keycodes used by app.py's _handle_key (kept here so the test
 # documents the contract it pins). These match the real source.
@@ -283,3 +285,127 @@ def test_modifier_release_clears_state(qapp):
     bridge._handle_key(_CODE_LEFTALT, _KEY_RELEASE)
     _press(bridge, _CODE_F2)
     assert ctl.calls == []
+
+
+# --------------------------------------------------------------------------
+# release(): explicit grab-drop + fd close on shutdown (harden-07).
+#
+# release() needs a REAL fd + QSocketNotifier, so unlike _make_bridge above
+# these tests build the bridge through the real __init__ on an os.pipe() read
+# end. A pipe fd cannot service EVIOCGRAB, so we monkeypatch
+# qdgreeter.app.fcntl.ioctl to RECORD calls and return 0 — letting us assert
+# the explicit ungrab (EVIOCGRAB 0) was attempted without a real evdev device.
+# --------------------------------------------------------------------------
+def _real_bridge_on_pipe(monkeypatch, controller: _FakeController):
+    """Build a real-__init__ bridge on a pipe read fd.
+
+    Returns (bridge, read_file, recorded_ioctls, close_write). The caller
+    must call close_write() to release the pipe write end. The ioctl recorder
+    captures (fd, request, arg) tuples and returns 0 so __init__/release never
+    hit a real evdev syscall.
+    """
+    recorded: list[tuple] = []
+
+    def _fake_ioctl(fd, request, arg):
+        recorded.append((fd, request, arg))
+        return 0
+
+    monkeypatch.setattr(qdgreeter_app.fcntl, "ioctl", _fake_ioctl)
+    r_fd, w_fd = os.pipe()
+    read_file = os.fdopen(r_fd, "rb", buffering=0)
+    bridge = _RawKeyboardBridge("fake-kbd", read_file, controller)
+
+    def _close_write() -> None:
+        try:
+            os.close(w_fd)
+        except OSError:
+            pass
+
+    return bridge, read_file, recorded, _close_write
+
+
+@pytest.mark.cheat_aware(
+    protects="the greeter explicitly releases its exclusive keyboard grab "
+    "(EVIOCGRAB 0) and closes the raw input fd when it shuts down, instead "
+    "of relying on implicit process-exit cleanup",
+    severity="low",
+    cheats=[
+        "make release() a no-op and rely on process exit",
+        "skip the EVIOCGRAB 0 ungrab and only close the fd",
+        "assert release() was called without checking the grab was dropped",
+    ],
+    consequence="the greeter could finish still holding an exclusive grab on "
+    "the keyboard device, and the explicit-cleanup guarantee would silently "
+    "rot",
+)
+def test_release_ungrabs_and_closes_input_fd(qapp, monkeypatch):
+    ctl = _FakeController()
+    bridge, read_file, recorded, close_write = _real_bridge_on_pipe(monkeypatch, ctl)
+    try:
+        bridge.release()
+
+        ungrabs = [
+            arg
+            for (_fd, request, arg) in recorded
+            if request == _EVIOCGRAB and struct.unpack("i", arg)[0] == 0
+        ]
+        assert ungrabs, (
+            "release() must EVIOCGRAB 0 to drop the exclusive grab; "
+            f"recorded ioctls: {recorded!r}"
+        )
+        assert read_file.closed is True, "release() must close the raw input fd"
+    finally:
+        close_write()
+
+
+def test_release_is_idempotent(qapp, monkeypatch):
+    ctl = _FakeController()
+    bridge, read_file, recorded, close_write = _real_bridge_on_pipe(monkeypatch, ctl)
+    try:
+        bridge.release()
+        ungrab_count = sum(
+            1
+            for (_fd, request, arg) in recorded
+            if request == _EVIOCGRAB and struct.unpack("i", arg)[0] == 0
+        )
+        # Second call must be a harmless no-op: no raise, no extra ungrab.
+        bridge.release()
+        ungrab_count_after = sum(
+            1
+            for (_fd, request, arg) in recorded
+            if request == _EVIOCGRAB and struct.unpack("i", arg)[0] == 0
+        )
+        assert ungrab_count_after == ungrab_count, (
+            "second release() must not re-issue the ungrab; "
+            f"counts {ungrab_count} -> {ungrab_count_after}"
+        )
+        assert read_file.closed is True
+    finally:
+        close_write()
+
+
+def test_release_disables_notifier(qapp, monkeypatch):
+    ctl = _FakeController()
+    bridge, read_file, recorded, close_write = _real_bridge_on_pipe(monkeypatch, ctl)
+    try:
+        assert bridge._notifier.isEnabled() is True
+        bridge.release()
+        assert bridge._notifier.isEnabled() is False, (
+            "release() must disable the QSocketNotifier before the fd is closed"
+        )
+    finally:
+        close_write()
+
+
+def test_read_available_is_safe_after_release(qapp, monkeypatch):
+    """If a handled key drives auth to success synchronously, release()
+    runs mid-loop and clears _event_file; a resumed _read_available() must
+    bail out cleanly rather than dereference the closed/None fd."""
+    ctl = _FakeController()
+    bridge, read_file, recorded, close_write = _real_bridge_on_pipe(monkeypatch, ctl)
+    try:
+        bridge.release()
+        # Must not raise AttributeError on self._event_file.fileno().
+        bridge._read_available()
+    finally:
+        close_write()

@@ -189,10 +189,47 @@ class _RawKeyboardBridge(QObject):
             self,
         )
         self._notifier.activated.connect(self._read_available)
+        self._released = False
         log.debug("raw keyboard bridge active for %s", self._device)
+
+    def release(self) -> None:
+        """Explicitly drop the exclusive keyboard grab and close the fd.
+
+        Idempotent and error-tolerant: it runs on the login-shutdown path
+        (controller.succeeded / app.aboutToQuit) and must never abort it.
+        Disable+disconnect the notifier before closing the fd so Qt does
+        not observe readiness on a descriptor about to be closed/reused.
+        """
+        if self._released or self._event_file is None:
+            return
+        self._released = True
+        # Every step below is defensively guarded: release runs on the
+        # login-shutdown path and must never raise, even if the notifier
+        # wrapper or file object is already torn down.
+        try:
+            self._notifier.setEnabled(False)
+            self._notifier.activated.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        try:
+            fd = self._event_file.fileno()
+            fcntl.ioctl(fd, _EVIOCGRAB, struct.pack("i", 0))
+        except (OSError, ValueError):
+            log.debug("raw keyboard ungrab failed for %s", self._device, exc_info=True)
+        try:
+            self._event_file.close()
+        except OSError:
+            log.debug("raw keyboard close failed for %s", self._device, exc_info=True)
+        self._event_file = None
+        log.debug("raw keyboard bridge released for %s", self._device)
 
     def _read_available(self, _fd: int | None = None) -> None:
         while True:
+            # release() may run mid-loop if a handled key drives the auth to
+            # success synchronously; it closes the fd and clears _event_file.
+            # Bail out rather than dereference a closed/None descriptor.
+            if self._event_file is None:
+                return
             try:
                 data = os.read(self._event_file.fileno(), _EVENT_STRUCT.size)
             except BlockingIOError:
@@ -403,26 +440,35 @@ def main(argv: list[str] | None = None) -> int:
     app = QGuiApplication(argv)
 
     controller = GreetController()
-    controller.succeeded.connect(app.quit)
     key_filter = _GreeterKeyFilter(controller)
     app.installEventFilter(key_filter)
     raw_keyboard = None
     if raw_keyboard_device and raw_keyboard_file is not None:
         raw_keyboard = _RawKeyboardBridge(raw_keyboard_device, raw_keyboard_file, controller)
+        # Connect release BEFORE app.quit so it runs first in emission order
+        # (Qt invokes directly-connected slots in connection order), and also
+        # on aboutToQuit as a belt-and-braces fallback. release() is idempotent.
+        controller.succeeded.connect(raw_keyboard.release)
+        app.aboutToQuit.connect(raw_keyboard.release)
+    controller.succeeded.connect(app.quit)
 
-    engine = QQmlApplicationEngine()
-    engine.addImportPath(str(QML_ROOT))
-    engine.rootContext().setContextProperty("controller", controller)
-    engine.rootContext().setContextProperty("greetController", controller)
-    engine.load(QUrl.fromLocalFile(str(QML_ROOT / "Main.qml")))
+    try:
+        engine = QQmlApplicationEngine()
+        engine.addImportPath(str(QML_ROOT))
+        engine.rootContext().setContextProperty("controller", controller)
+        engine.rootContext().setContextProperty("greetController", controller)
+        engine.load(QUrl.fromLocalFile(str(QML_ROOT / "Main.qml")))
 
-    if not engine.rootObjects():
-        log.error("QML failed to load")
-        return 2
+        if not engine.rootObjects():
+            log.error("QML failed to load")
+            return 2
 
-    app._qdgreeter_key_filter = key_filter  # type: ignore[attr-defined]
-    app._qdgreeter_raw_keyboard = raw_keyboard  # type: ignore[attr-defined]
-    return app.exec()
+        app._qdgreeter_key_filter = key_filter  # type: ignore[attr-defined]
+        app._qdgreeter_raw_keyboard = raw_keyboard  # type: ignore[attr-defined]
+        return app.exec()
+    finally:
+        if raw_keyboard is not None:
+            raw_keyboard.release()
 
 
 if __name__ == "__main__":
