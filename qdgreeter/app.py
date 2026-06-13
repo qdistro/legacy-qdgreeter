@@ -11,9 +11,11 @@ import fcntl
 import json
 import logging
 import os
+import stat
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import BinaryIO
 
@@ -312,11 +314,58 @@ def _ensure_eglfs_software_cursor() -> None:
         log.debug("bare metal: keeping eglfs hardware cursor")
         return
 
-    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
-    config_path = Path(runtime_dir) / "qdgreeter-eglfs-kms.json"
+    # Never fall back to /tmp: the path is fed to Qt's QT_QPA_EGLFS_KMS_CONFIG,
+    # so a world-writable, predictable location is a config-injection vector.
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime_dir:
+        log.warning("XDG_RUNTIME_DIR unset; skipping eglfs software cursor")
+        return
+
+    # Validate the runtime dir before writing: it must exist, be a directory we
+    # own, and not be accessible to group/other. Cheap defense in depth even
+    # though the env is _greeter-private.
     try:
-        config_path.write_text(json.dumps({"hwcursor": False}))
+        st = os.stat(runtime_dir)
     except OSError:
+        log.warning(
+            "XDG_RUNTIME_DIR %s not statable; skipping eglfs software cursor",
+            runtime_dir,
+            exc_info=True,
+        )
+        return
+    if (
+        not stat.S_ISDIR(st.st_mode)
+        or st.st_uid != os.geteuid()
+        or stat.S_IMODE(st.st_mode) & 0o077 != 0
+    ):
+        log.warning(
+            "XDG_RUNTIME_DIR %s failed ownership/permission check; "
+            "skipping eglfs software cursor",
+            runtime_dir,
+        )
+        return
+
+    # Write atomically and symlink-safely: mkstemp gives an O_EXCL fd we own,
+    # and os.replace onto the destination swaps the directory entry rather than
+    # writing through a planted symlink at the predictable path.
+    config_path = Path(runtime_dir) / "qdgreeter-eglfs-kms.json"
+    # mkstemp itself can fail (ENOSPC, EMFILE, ACL/LSM denial); keep it inside
+    # the guarded block so a cursor-config failure degrades gracefully (warn +
+    # leave the env unset) rather than aborting greeter startup.
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(
+            dir=runtime_dir, prefix="qdgreeter-eglfs-kms.", suffix=".json"
+        )
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps({"hwcursor": False}))
+        os.replace(tmp, str(config_path))
+    except OSError:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         log.warning(
             "could not write eglfs KMS config to %s; cursor may be invisible",
             config_path,

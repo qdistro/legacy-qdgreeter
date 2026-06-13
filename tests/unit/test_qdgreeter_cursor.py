@@ -133,6 +133,91 @@ def test_bare_metal_keeps_hardware_cursor(monkeypatch, clean_env):
     assert not (clean_env / "qdgreeter-eglfs-kms.json").exists()
 
 
+def test_unset_runtime_dir_skips_without_writing(monkeypatch, clean_env):
+    """With XDG_RUNTIME_DIR unset we must not fall back to /tmp (a predictable,
+    world-writable, config-injection-prone path) — skip the tweak entirely."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "eglfs")
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+
+    _ensure_eglfs_software_cursor()
+
+    assert "QT_QPA_EGLFS_KMS_CONFIG" not in os.environ
+    # nothing written under the (former) runtime dir
+    assert not (clean_env / "qdgreeter-eglfs-kms.json").exists()
+
+
+def test_group_world_accessible_runtime_dir_skips(monkeypatch, clean_env):
+    """A runtime dir reachable by group/other could let another principal plant
+    a symlink/file at the predictable path; refuse to write into it."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "eglfs")
+    os.chmod(clean_env, 0o755)
+
+    _ensure_eglfs_software_cursor()
+
+    assert "QT_QPA_EGLFS_KMS_CONFIG" not in os.environ
+    assert not (clean_env / "qdgreeter-eglfs-kms.json").exists()
+
+
+@pytest.mark.cheat_aware(
+    protects="the greeter never writes through a planted symlink at the "
+    "predictable KMS-config path (os.replace swaps the dir entry instead)",
+    severity="high",
+    cheats=[
+        "use write_text/open without O_NOFOLLOW so the write follows the link",
+        "assert only the final file content, not that the decoy target was "
+        "left untouched",
+    ],
+    consequence="a _greeter-writable symlink redirects a Qt KMS config write "
+    "to an arbitrary file (clobber/DoS + config injection)",
+)
+def test_symlink_at_final_path_is_not_followed(monkeypatch, clean_env):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "eglfs")
+
+    decoy = clean_env / "decoy-target"
+    decoy.write_text("DO NOT CLOBBER")
+    final = clean_env / "qdgreeter-eglfs-kms.json"
+    os.symlink(str(decoy), str(final))
+
+    _ensure_eglfs_software_cursor()
+
+    # the planted symlink target must be untouched ...
+    assert decoy.read_text() == "DO NOT CLOBBER"
+    # ... and the final path is now a real file with our config, not a link
+    assert not os.path.islink(str(final))
+    assert json.loads(final.read_text()) == {"hwcursor": False}
+
+
+def test_stale_regular_file_is_replaced(monkeypatch, clean_env):
+    """A leftover config from a prior run is atomically replaced, not appended
+    to or left stale."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "eglfs")
+
+    final = clean_env / "qdgreeter-eglfs-kms.json"
+    final.write_text(json.dumps({"hwcursor": True, "stale": "old"}))
+
+    _ensure_eglfs_software_cursor()
+
+    assert os.environ.get("QT_QPA_EGLFS_KMS_CONFIG") == str(final)
+    assert json.loads(final.read_text()) == {"hwcursor": False}
+
+
+def test_tempfile_creation_failure_degrades_gracefully(monkeypatch, clean_env):
+    """mkstemp itself can fail (ENOSPC, EMFILE, ACL/LSM denial) even after the
+    runtime dir passes validation; that must warn and skip, never raise out of
+    _ensure_eglfs_software_cursor and abort greeter startup."""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "eglfs")
+    monkeypatch.setattr(
+        app.tempfile, "mkstemp",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("ENOSPC")),
+    )
+
+    # must not raise
+    _ensure_eglfs_software_cursor()
+
+    assert "QT_QPA_EGLFS_KMS_CONFIG" not in os.environ
+    assert not (clean_env / "qdgreeter-eglfs-kms.json").exists()
+
+
 def test_virt_detection_failure_defaults_to_software_cursor(monkeypatch, clean_env):
     """If systemd-detect-virt is missing/errors, prefer a guaranteed-visible
     software cursor over a possibly-invisible hardware one — an unusable
