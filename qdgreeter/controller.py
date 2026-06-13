@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shlex
+import stat
 import subprocess
 import threading
 
@@ -38,16 +40,79 @@ from .greetd import GreetdClient, GreetdError
 
 log = logging.getLogger("qdgreeter.controller")
 
-DEFAULT_USER = os.environ.get("QDGREETER_USER", "admin")
-# greetd execs this as the authenticated user; its lifetime IS the session
-# lifetime. A bare `systemctl --user start qdwin-session.target` returns 0
-# as soon as the job is enqueued — greetd would see a clean session end
-# milliseconds after auth and recycle back to the greeter. The launcher
-# (deploy/qdwin-session-launcher.sh) does the right `--wait` semantics and
-# surfaces non-zero exits.
-DEFAULT_SESSION_CMD = os.environ.get(
-    "QDGREETER_SESSION_CMD", "/usr/local/bin/qdwin-session-launcher"
-).split()
+# Finding 05: QDGREETER_USER and QDGREETER_SESSION_CMD decide WHO authenticates
+# and WHAT runs as that user post-auth (the latter is passed to greetd
+# start_session). In production greetd supplies a clean root-owned environment
+# and does not set these, so the hardcoded defaults below apply. But a polluted
+# environment (a misconfigured greetd, a debug run, an inherited-env mistake)
+# could redirect the authenticated identity or the post-auth command. So the env
+# overrides are honored ONLY when a ROOT-OWNED marker authorizes them — a
+# same-uid/unprivileged process cannot forge it. Mirrors the qdlocker-02 gate.
+_FALLBACK_USER = "admin"
+_FALLBACK_SESSION_CMD = ["/usr/local/bin/qdwin-session-launcher"]
+_ENV_OVERRIDE_MARKER = "/etc/qdistro/greeter-env-override"
+
+
+def _env_overrides_authorized() -> bool:
+    """True only when the root-owned override marker is present and
+    trustworthy: a regular file owned by root with no group/world write bits,
+    resolved without following a symlink (lstat). Same trust rule the locker
+    applies to its system config."""
+    try:
+        st = os.lstat(_ENV_OVERRIDE_MARKER)
+    except OSError:
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        log.warning("env-override marker %s is not a regular file; refusing",
+                    _ENV_OVERRIDE_MARKER)
+        return False
+    if st.st_uid != 0:
+        log.warning("env-override marker %s not owned by root (uid=%d); refusing",
+                    _ENV_OVERRIDE_MARKER, st.st_uid)
+        return False
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        log.warning("env-override marker %s is group/world-writable; refusing",
+                    _ENV_OVERRIDE_MARKER)
+        return False
+    return True
+
+
+def _resolve_user() -> str:
+    if _env_overrides_authorized():
+        # Even an authorized (root-set) override must be non-empty; a blank
+        # QDGREETER_USER would otherwise hand greetd an empty username.
+        user = os.environ.get("QDGREETER_USER", "").strip()
+        if user:
+            return user
+    return _FALLBACK_USER
+
+
+def _resolve_session_cmd() -> list[str]:
+    # greetd execs this as the authenticated user; its lifetime IS the session
+    # lifetime. A bare `systemctl --user start qdwin-session.target` returns 0
+    # as soon as the job is enqueued — greetd would see a clean session end
+    # milliseconds after auth and recycle back to the greeter. The launcher
+    # (deploy/qdwin-session-launcher.sh) does the right `--wait` semantics and
+    # surfaces non-zero exits.
+    if _env_overrides_authorized():
+        raw = os.environ.get("QDGREETER_SESSION_CMD", "")
+        try:
+            cmd = shlex.split(raw)
+        except ValueError:
+            # Malformed quoting must not exit the only interactive login at
+            # import time; fall back to the safe default.
+            log.warning("invalid QDGREETER_SESSION_CMD; using fallback",
+                        exc_info=True)
+            cmd = []
+        if cmd:
+            return cmd
+    return list(_FALLBACK_SESSION_CMD)
+
+
+# Resolved once at import: the marker does not change during a single pre-auth
+# greeter lifetime. Without the marker (production) these are the safe defaults.
+DEFAULT_USER = _resolve_user()
+DEFAULT_SESSION_CMD = _resolve_session_cmd()
 
 # Shown when a PAM stack issues a second `secret` prompt within one
 # auth exchange (e.g. password + a separate OTP/second-factor

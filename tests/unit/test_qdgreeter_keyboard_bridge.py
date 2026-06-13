@@ -36,7 +36,11 @@ if _HEADLESS:
 PyQt6 = pytest.importorskip("PyQt6", reason="PyQt6 not installed")
 from PyQt6.QtCore import QCoreApplication  # noqa: E402
 from qdgreeter import app as qdgreeter_app  # noqa: E402
-from qdgreeter.app import _EVIOCGRAB, _RawKeyboardBridge  # noqa: E402
+from qdgreeter.app import (  # noqa: E402
+    _EVIOCGRAB,
+    _RawKeyboardBridge,
+    _UsTableDecoder,
+)
 
 # evdev keycodes used by app.py's _handle_key (kept here so the test
 # documents the contract it pins). These match the real source.
@@ -87,14 +91,15 @@ def qapp():
 
 def _make_bridge(controller: _FakeController) -> _RawKeyboardBridge:
     """Build a bridge without running __init__ (which needs a real fd /
-    QSocketNotifier). We only need the modifier state ``_handle_key``
-    touches plus the controller and device label."""
+    QSocketNotifier). ``_handle_key`` delegates modifier/character decode to
+    ``self._decoder``; these tests pin the US-table fallback decoder (the path
+    used when libxkbcommon is unavailable), so they assert US-layout behavior.
+    The libxkbcommon path (non-US layouts) is covered in
+    test_qdgreeter_xkb_decode.py."""
     bridge = _RawKeyboardBridge.__new__(_RawKeyboardBridge)
     bridge._controller = controller
     bridge._device = "fake-kbd"
-    bridge._shift = False
-    bridge._ctrl = False
-    bridge._alt = False
+    bridge._decoder = _UsTableDecoder()
     return bridge
 
 
