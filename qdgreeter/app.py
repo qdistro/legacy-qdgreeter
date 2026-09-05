@@ -29,8 +29,12 @@ from .controller import GreetController
 
 log = logging.getLogger("qdgreeter.app")
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-QML_ROOT = REPO_ROOT / "qml"
+# The QML ships INSIDE the package (qdgreeter/qml, pyproject package-data),
+# so a pip install carries it: with the earlier top-level qml/ every wheel
+# shipped no QML and the greeter died at boot with "Main.qml: No such file"
+# on any pip-installed machine (found by image/verify.sh, todo/iso/14 Phase D;
+# the VM harness had hidden it by copying the whole source tree to /opt).
+QML_ROOT = Path(__file__).resolve().parent / "qml"
 
 _EV_KEY = 1
 _KEY_RELEASE = 0

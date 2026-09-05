@@ -52,7 +52,7 @@ qdgreeter/
 │   ├── app.py           QGuiApplication + QML
 │   ├── controller.py    GreetController (greetd JSON client)
 │   ├── greetd.py        UNIX-socket JSON protocol to greetd
-├── qml/
+├── qdgreeter/qml/          (package data: shipped by pip)
 │   ├── Main.qml
 │   └── GreetUI.qml
 ├── systemd/
