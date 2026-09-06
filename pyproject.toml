@@ -18,6 +18,16 @@ qdgreeter = "qdgreeter.app:main"
 [tool.setuptools.packages.find]
 include = ["qdgreeter*"]
 
+[tool.setuptools.package-data]
+# Ship the QML with the wheel. Globs are relative to the package directory
+# (`qdgreeter/`); a path that escapes the package (`../qml/...`) is silently
+# dropped by setuptools, which is how the greeter used to ship without its UI.
+qdgreeter = [
+    "qml/*.qml",
+    "qml/shim/*.qml",
+    "qml/shim/qmldir",
+]
+
 [tool.pytest.ini_options]
 # pytest-qt otherwise auto-imports PySide6 first if it's installed
 # anywhere on the path, which loads PySide6's bundled libQt6Core.so
