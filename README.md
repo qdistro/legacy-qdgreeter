@@ -1,3 +1,9 @@
+> **Moved.** This repository is frozen and archived. Development continues in
+> [qdistro/qdistro](https://github.com/qdistro/qdistro/tree/main/qdgreeter) under
+> `qdgreeter/`. Its full history up to `998b4abcb` is also preserved there on
+> branch [`legacy/multirepo/qdgreeter`](https://github.com/qdistro/qdistro/tree/legacy/multirepo/qdgreeter).
+> This repository was renamed from `qdgreeter` to `legacy-qdgreeter`.
+
 # qdgreeter
 
 Graphical boot greeter for qdistro. Drop-in replacement for `tuigreet`
